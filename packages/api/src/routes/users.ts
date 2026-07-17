@@ -40,8 +40,8 @@ export async function userRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send({ id: user.id, name: user.name, role: user.role });
   });
 
-  // Adults may read the family user list (needed to display/assign account owners).
-  app.get("/", { preHandler: requireRole("admin", "adult") }, async () => {
+  // Admin-only: the family user list (owner assignment lives in admin-only Settings).
+  app.get("/", { preHandler: requireRole("admin") }, async () => {
     const users = await prisma.user.findMany({ orderBy: { createdAt: "asc" } });
     return users.map((u) => ({
       id: u.id,

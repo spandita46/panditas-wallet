@@ -36,8 +36,12 @@ export function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<DashboardPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        {user.role === "admin" && <Route path="/users" element={<UsersPage />} />}
+        {user.role === "admin" && (
+          <>
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/users" element={<UsersPage />} />
+          </>
+        )}
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

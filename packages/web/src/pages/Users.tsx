@@ -30,7 +30,7 @@ export function UsersPage() {
       return api.post("/users", {
         name: form.name,
         role: form.role,
-        email: isKid ? undefined : form.email,
+        email: form.email || undefined, // optional for kids, required for adults
         password: isKid ? undefined : form.password,
         pin: isKid ? form.pin : undefined,
         avatarEmoji: form.avatarEmoji || undefined,
@@ -52,6 +52,17 @@ export function UsersPage() {
   const setName = useMutation({
     mutationFn: (v: { id: string; name: string }) => api.patch(`/users/${v.id}`, { name: v.name }),
     onSuccess: invalidate,
+  });
+
+  const [secretMsg, setSecretMsg] = useState<string | null>(null);
+  const setSecret = useMutation({
+    mutationFn: (v: { id: string; password?: string; pin?: string }) =>
+      api.patch(`/users/${v.id}`, v.password ? { password: v.password } : { pin: v.pin }),
+    onSuccess: () => {
+      setSecretMsg("Password updated.");
+      setTimeout(() => setSecretMsg(null), 3000);
+    },
+    onError: (err) => setSecretMsg(err instanceof ApiError ? err.message : "Could not update"),
   });
 
   if (user?.role !== "admin") {
@@ -87,19 +98,23 @@ export function UsersPage() {
             </select>
           </Field>
 
+          <Field label={isKid ? "Email (optional)" : "Email"}>
+            <input
+              required={!isKid}
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              className="input"
+            />
+          </Field>
           {isKid ? (
             <Field label="PIN (4–8 digits)">
               <input required value={form.pin} onChange={(e) => setForm({ ...form, pin: e.target.value })} inputMode="numeric" className="input" />
             </Field>
           ) : (
-            <>
-              <Field label="Email">
-                <input required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="input" />
-              </Field>
-              <Field label="Password (min 8)">
-                <input required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="input" />
-              </Field>
-            </>
+            <Field label="Password (min 8)">
+              <input required type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="input" />
+            </Field>
           )}
 
           <Field label="Avatar emoji (optional)">
@@ -116,7 +131,10 @@ export function UsersPage() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Family members</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Family members</h2>
+          {secretMsg && <span className="text-xs text-slate-600">{secretMsg}</span>}
+        </div>
         <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
           {users.data?.map((u) => (
             <UserRow
@@ -125,6 +143,9 @@ export function UsersPage() {
               isSelf={u.id === user.id}
               onName={(name) => setName.mutate({ id: u.id, name })}
               onActive={(isActive) => setActive.mutate({ id: u.id, isActive })}
+              onSecret={(secret) =>
+                setSecret.mutate(u.role === "kid" ? { id: u.id, pin: secret } : { id: u.id, password: secret })
+              }
             />
           ))}
         </div>
@@ -138,45 +159,93 @@ function UserRow({
   isSelf,
   onName,
   onActive,
+  onSecret,
 }: {
   user: FamilyUser;
   isSelf: boolean;
   onName: (name: string) => void;
   onActive: (isActive: boolean) => void;
+  onSecret: (secret: string) => void;
 }) {
   const [name, setNameValue] = useState(user.name);
+  const [showSecret, setShowSecret] = useState(false);
+  const [secret, setSecret] = useState("");
+  const isKid = user.role === "kid";
+  const minLen = isKid ? 4 : 8;
+
   const commit = () => {
     const next = name.trim();
     if (next && next !== user.name) onName(next);
     else setNameValue(user.name);
   };
 
+  const saveSecret = () => {
+    if (secret.length >= minLen) {
+      onSecret(secret);
+      setSecret("");
+      setShowSecret(false);
+    }
+  };
+
   return (
-    <div className={`flex items-center justify-between gap-3 border-b border-slate-100 bg-white p-3 text-sm last:border-0 ${user.isActive ? "" : "opacity-60"}`}>
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="text-xl">{user.avatarEmoji ?? "👤"}</span>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <input
-              value={name}
-              onChange={(e) => setNameValue(e.target.value)}
-              onBlur={commit}
-              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-              className="max-w-[10rem] rounded-lg border border-slate-300 px-2 py-1 text-sm font-medium text-slate-900"
-            />
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">{ROLE_LABELS[user.role]}</span>
-            {isSelf && <span className="text-xs text-slate-500">you</span>}
+    <div className={`border-b border-slate-100 bg-white p-3 text-sm last:border-0 ${user.isActive ? "" : "opacity-60"}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="text-xl">{user.avatarEmoji ?? "👤"}</span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <input
+                value={name}
+                onChange={(e) => setNameValue(e.target.value)}
+                onBlur={commit}
+                onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+                className="max-w-[10rem] rounded-lg border border-slate-300 px-2 py-1 text-sm font-medium text-slate-900"
+              />
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">{ROLE_LABELS[user.role]}</span>
+              {isSelf && <span className="text-xs text-slate-500">you</span>}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">{user.email ?? "PIN login"}</p>
           </div>
-          <p className="mt-1 text-xs text-slate-500">{user.email ?? "PIN login"}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => setShowSecret((s) => !s)}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+          >
+            {isKid ? "Reset PIN" : "Reset password"}
+          </button>
+          {!isSelf && (
+            <button
+              onClick={() => onActive(!user.isActive)}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+            >
+              {user.isActive ? "Deactivate" : "Reactivate"}
+            </button>
+          )}
         </div>
       </div>
-      {!isSelf && (
-        <button
-          onClick={() => onActive(!user.isActive)}
-          className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
-        >
-          {user.isActive ? "Deactivate" : "Reactivate"}
-        </button>
+      {showSecret && (
+        <div className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-3">
+          <input
+            type={isKid ? "text" : "password"}
+            inputMode={isKid ? "numeric" : undefined}
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && saveSecret()}
+            placeholder={isKid ? `New PIN (min ${minLen} digits)` : `New password (min ${minLen})`}
+            className="max-w-xs rounded-lg border border-slate-300 px-2 py-1 text-sm"
+          />
+          <button
+            onClick={saveSecret}
+            disabled={secret.length < minLen}
+            className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+          >
+            Save
+          </button>
+          <button onClick={() => { setShowSecret(false); setSecret(""); }} className="text-xs text-slate-500">
+            Cancel
+          </button>
+        </div>
       )}
     </div>
   );

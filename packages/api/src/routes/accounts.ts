@@ -28,8 +28,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     return accounts.map(toAccountDTO);
   });
 
-  // Create a manual account (Coinbase, cash, piggy bank, etc.).
-  app.post("/manual", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+  // Create a manual account (Coinbase, cash, piggy bank, etc.). Admin-only config.
+  app.post("/manual", { preHandler: requireRole("admin") }, async (request, reply) => {
     const parsed = createManualAccountSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
 
@@ -51,8 +51,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(toAccountDTO(account));
   });
 
-  // Update a manual account's balance (and snapshot it for history).
-  app.patch("/:id/balance", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+  // Update a manual account's balance (and snapshot it for history). Admin-only config.
+  app.patch("/:id/balance", { preHandler: requireRole("admin") }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const parsed = updateBalanceSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
@@ -74,8 +74,8 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     return toAccountDTO(account);
   });
 
-  // Correct a synced account's type/name (the sync guesses the type on first import).
-  app.patch("/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+  // Correct a synced account's type/name (the sync guesses the type on first import). Admin-only config.
+  app.patch("/:id", { preHandler: requireRole("admin") }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const parsed = updateAccountSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });

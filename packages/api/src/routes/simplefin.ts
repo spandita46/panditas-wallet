@@ -46,8 +46,8 @@ export async function simplefinRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send({ connectionId: connection.id, summary });
   });
 
-  // Connection + institution health for the settings screen.
-  app.get("/status", { preHandler: requireRole("admin", "adult") }, async () => {
+  // Connection + institution health for the settings screen. Admin-only config.
+  app.get("/status", { preHandler: requireRole("admin") }, async () => {
     const [connections, institutions, lastRun] = await Promise.all([
       prisma.simplefinConnection.findMany({ orderBy: { createdAt: "asc" } }),
       prisma.institution.findMany({

@@ -4,8 +4,8 @@ import { useAuth, type SessionUser } from "../auth";
 
 export function LoginPage() {
   const { refresh } = useAuth();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [identifier, setIdentifier] = useState("");
+  const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -14,10 +14,10 @@ export function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.post<SessionUser>("/auth/login", { email, password });
+      await api.post<SessionUser>("/auth/login", { identifier, secret });
       refresh();
     } catch {
-      setError("Invalid email or password");
+      setError("Invalid name/email or password/PIN");
     } finally {
       setBusy(false);
     }
@@ -34,22 +34,24 @@ export function LoginPage() {
           <p className="mt-1 text-sm text-slate-500">Family finances, on your network only.</p>
         </div>
         <label className="block text-sm font-medium text-slate-700">
-          Email
+          Name or email
           <input
-            type="email"
+            type="text"
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            autoCapitalize="none"
+            autoCorrect="off"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
             className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
           />
         </label>
         <label className="block text-sm font-medium text-slate-700">
-          Password
+          Password or PIN
           <input
             type="password"
             required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
             className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-slate-900"
           />
         </label>

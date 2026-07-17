@@ -39,17 +39,13 @@ export const isLiability = (t: AccountType) => LIABILITY_TYPES.includes(t);
 // Auth
 // ----------------------------------------------------------------------------
 
+// Unified login: identifier is a name or email (case-insensitive); secret is a
+// password (adults/admin) or a PIN (kids).
 export const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(1),
+  identifier: z.string().min(1),
+  secret: z.string().min(1),
 });
 export type LoginInput = z.infer<typeof loginSchema>;
-
-export const kidLoginSchema = z.object({
-  userId: z.string().min(1),
-  pin: z.string().min(4).max(8),
-});
-export type KidLoginInput = z.infer<typeof kidLoginSchema>;
 
 // ----------------------------------------------------------------------------
 // User management (admin only)
