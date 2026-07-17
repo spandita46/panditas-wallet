@@ -149,6 +149,28 @@ export interface DashboardSummary {
 }
 
 // ----------------------------------------------------------------------------
+// Piggy bank (kids)
+// ----------------------------------------------------------------------------
+
+export const addPiggyTxnSchema = z.object({
+  direction: z.enum(["in", "out"]),
+  amount: z.number().positive().max(1_000_000),
+  description: z.string().min(1).max(100),
+});
+export type AddPiggyTxnInput = z.infer<typeof addPiggyTxnSchema>;
+
+export interface PiggyPoint {
+  date: string;
+  balance: number;
+}
+
+export interface PiggyBankData {
+  account: AccountDTO;
+  transactions: TransactionDTO[];
+  history: PiggyPoint[];
+}
+
+// ----------------------------------------------------------------------------
 // Money helpers
 // ----------------------------------------------------------------------------
 

@@ -5,6 +5,7 @@ import { env } from "./env.js";
 import { authRoutes } from "./routes/auth.js";
 import { accountRoutes } from "./routes/accounts.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { piggyBankRoutes } from "./routes/piggybank.js";
 import { simplefinRoutes } from "./routes/simplefin.js";
 import { transactionRoutes } from "./routes/transactions.js";
 import { userRoutes } from "./routes/users.js";
@@ -23,6 +24,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(dashboardRoutes, { prefix: "/api/dashboard" });
   await app.register(simplefinRoutes, { prefix: "/api/simplefin" });
   await app.register(transactionRoutes, { prefix: "/api/transactions" });
+  await app.register(piggyBankRoutes, { prefix: "/api/piggybank" });
 
   return app;
 }
