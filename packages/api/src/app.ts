@@ -1,5 +1,7 @@
+import { fileURLToPath } from "node:url";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { env } from "./env.js";
 import { authRoutes } from "./routes/auth.js";
@@ -25,6 +27,20 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(simplefinRoutes, { prefix: "/api/simplefin" });
   await app.register(transactionRoutes, { prefix: "/api/transactions" });
   await app.register(piggyBankRoutes, { prefix: "/api/piggybank" });
+
+  // Single-port deploy: also serve the built web app (LAN / NAS).
+  if (env.SERVE_WEB) {
+    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
+    await app.register(fastifyStatic, { root: webRoot, wildcard: false });
+    // SPA fallback: any non-API GET returns index.html so client routes work on refresh.
+    app.setNotFoundHandler((request, reply) => {
+      if (request.method === "GET" && !request.url.startsWith("/api")) {
+        return reply.sendFile("index.html");
+      }
+      return reply.code(404).send({ error: "Not found" });
+    });
+    app.log.info(`Serving web app from ${webRoot}`);
+  }
 
   return app;
 }

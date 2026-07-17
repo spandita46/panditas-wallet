@@ -1,4 +1,7 @@
-const BASE = import.meta.env.VITE_API_BASE_URL || "";
+// Always same-origin/relative: in dev the Vite proxy forwards /api to the API;
+// in the single-port LAN/NAS deploy the API serves this app itself. This is what
+// lets any device on the network reach the API without CORS or hardcoded hosts.
+const BASE = "";
 
 export class ApiError extends Error {
   constructor(

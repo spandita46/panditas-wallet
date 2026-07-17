@@ -49,6 +49,39 @@ pnpm dev
 - Web: http://localhost:5173
 - API: http://localhost:4000
 
+`pnpm dev` runs the two dev servers. For **family access on the home network**, use the
+single-port server below instead.
+
+## Run on your home network (family access)
+
+The API can also serve the built web app on a single port, so anyone on your Wi-Fi can use it.
+No renaming the Mac needed — family connects via its **LAN IP address** (reliable on both
+iOS and Android, unlike `.local` names, which Android doesn't resolve well).
+
+**One-time setup:** make sure Docker Desktop is installed and `.env` is configured.
+
+**Each time you want the family to use it**
+- Double-click `scripts/start-panditas.command`. It starts Postgres, builds the web app,
+  and serves everything on port 80, then prints the address to open — something like
+  `http://192.168.1.186`. Enter your Mac password when asked, click **Allow** on the
+  firewall prompt, and leave the window open.
+
+**How family connects** (same Wi-Fi):
+1. Open the IP address the script printed, in any browser (iPhone, iPad, or Android).
+2. Use the browser's **"Add to Home Screen"** (Safari: Share → Add to Home Screen;
+   Chrome: ⋮ menu → Add to Home Screen) — gives a tap-to-open icon, no retyping.
+
+Your router assigns that IP via DHCP, so it can change if the Mac reconnects to Wi-Fi.
+If the family's shortcut ever stops working, re-run the script and check the new IP —
+or set a **DHCP reservation** for this Mac in your router's admin page (look for
+"DHCP reservation" / "static lease" — pins the IP to this Mac's Wi-Fi MAC address
+permanently, most home routers support it).
+
+Prefer no password prompt? Run `SERVE_WEB=true API_PORT=4000 pnpm --filter @panditas/api serve`
+and connect to `http://<ip>:4000` instead (unprivileged port, IP won't change).
+
+> Same architecture (single container serving web + API) moves straight to your NAS later.
+
 ## Build roadmap
 
 - **Phase 0 — Foundation** *(in progress)*: monorepo, Docker Postgres, Prisma schema, auth, app shell.

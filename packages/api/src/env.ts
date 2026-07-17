@@ -18,6 +18,11 @@ const envSchema = z.object({
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, "ENCRYPTION_KEY must be 32 bytes as 64 hex chars"),
   SYNC_CRON: z.string().default("0 */6 * * *"),
+  // When true, the API also serves the built web app (single-port LAN/NAS deploy).
+  SERVE_WEB: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 
