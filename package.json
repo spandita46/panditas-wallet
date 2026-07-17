@@ -1,0 +1,24 @@
+{
+  "name": "panditas-wallet",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Self-hosted, family-tailored personal finance app (LAN-only). Web first, mobile later.",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "db:up": "docker compose up -d db",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f db",
+    "dev": "pnpm --parallel --filter @panditas/api --filter @panditas/web dev",
+    "dev:api": "pnpm --filter @panditas/api dev",
+    "dev:web": "pnpm --filter @panditas/web dev",
+    "build": "pnpm --filter @panditas/shared build && pnpm --filter @panditas/api build && pnpm --filter @panditas/web build",
+    "prisma:generate": "pnpm --filter @panditas/api prisma:generate",
+    "prisma:migrate": "pnpm --filter @panditas/api prisma:migrate",
+    "prisma:studio": "pnpm --filter @panditas/api prisma:studio",
+    "db:seed": "pnpm --filter @panditas/api db:seed",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

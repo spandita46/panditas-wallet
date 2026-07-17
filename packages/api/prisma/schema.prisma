@@ -1,0 +1,348 @@
+// Panditas Wallet — data model
+// Money is stored as Decimal(14,2) in CAD. Sign convention for Transaction.amount:
+// negative = outflow (spending), positive = inflow (income/refund).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// Users & auth
+// ----------------------------------------------------------------------------
+
+enum Role {
+  admin // account owner: full access + user management
+  adult // shared access to all family finances
+  kid   // isolated view of only their own piggy bank
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String?   @unique
+  role         Role      @default(adult)
+  // Adults/admin authenticate with a password; kids may use a short PIN.
+  passwordHash String?
+  pinHash      String?
+  avatarEmoji  String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions         Session[]
+  ownedAccounts    Account[]     @relation("AccountOwner")
+  accountAccess    AccountUser[]
+  benefitingTxns   Transaction[] @relation("TxnBeneficiary")
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ----------------------------------------------------------------------------
+// Institutions & accounts
+// ----------------------------------------------------------------------------
+
+enum InstitutionProvider {
+  simplefin
+  manual
+}
+
+enum InstitutionStatus {
+  ok
+  auth_required
+  error
+  never_synced
+}
+
+// A SimpleFIN Bridge connection. One access URL returns accounts across many
+// institutions/orgs, so the encrypted credential lives here, not on Institution.
+model SimplefinConnection {
+  id                 String    @id @default(cuid())
+  label              String?
+  // AES-256-GCM encrypted SimpleFIN access URL (contains basic-auth creds). Never plaintext.
+  accessUrlEncrypted String
+  status             SyncStatus @default(running)
+  statusMessage      String?
+  lastSyncedAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  institutions Institution[]
+}
+
+model Institution {
+  id         String              @id @default(cuid())
+  name       String
+  provider   InstitutionProvider @default(simplefin)
+  // SimpleFIN organization/domain id, when known.
+  externalId String?
+  status     InstitutionStatus   @default(never_synced)
+  statusMessage String?
+  connectionId String?
+  connection   SimplefinConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  lastSyncedAt DateTime?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  accounts  Account[]
+  syncRuns  SyncRun[]
+
+  @@unique([provider, externalId])
+}
+
+enum AccountType {
+  chequing
+  savings
+  credit_card
+  investment
+  loan
+  cash
+  piggy_bank
+}
+
+enum Visibility {
+  shared  // visible to both adults (default)
+  private // Phase 2/3: hidden from the other adult
+}
+
+model Account {
+  id             String       @id @default(cuid())
+  institutionId  String?
+  institution    Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  name           String
+  // User-friendly nickname (never touched by sync). Display falls back to `name`.
+  label          String?
+  officialName   String?
+  type           AccountType
+  currency       String       @default("CAD")
+  isManual       Boolean      @default(false)
+  // SimpleFIN account id, for dedupe on sync.
+  externalId     String?
+  currentBalance Decimal      @default(0) @db.Decimal(14, 2)
+  availableBalance Decimal?   @db.Decimal(14, 2)
+  creditLimit    Decimal?     @db.Decimal(14, 2)
+  // Primary owner (e.g. a kid for a piggy bank). Admin assigns ownership.
+  ownerUserId    String?
+  owner          User?        @relation("AccountOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  visibility     Visibility   @default(shared)
+  isClosed       Boolean      @default(false)
+  // When false, the account is ignored: excluded from net worth, dashboards and
+  // transaction lists (e.g. duplicate/unused accounts). Still visible in settings.
+  isTracked      Boolean      @default(true)
+  lastSyncedAt   DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  transactions   Transaction[]
+  contributions  Contribution[]
+  goals          Goal[]
+  snapshots      BalanceSnapshot[]
+  access         AccountUser[]
+
+  @@unique([institutionId, externalId])
+  @@index([type])
+}
+
+// Explicit user<->account association (assigned by admin). Enables per-adult
+// access control and, later, private accounts.
+model AccountUser {
+  id        String  @id @default(cuid())
+  accountId String
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  canManage Boolean @default(false)
+
+  @@unique([accountId, userId])
+}
+
+// ----------------------------------------------------------------------------
+// Transactions & categorization
+// ----------------------------------------------------------------------------
+
+enum TxnSource {
+  simplefin
+  manual
+}
+
+// Who the spend was *for* — distinct from who paid (account owner) and what
+// (category). Enables "who benefited" tracking.
+enum Beneficiary {
+  self           // the spender themselves
+  family_member  // a specific family member (see beneficiaryUserId)
+  household      // the whole family
+  external       // someone outside the family (e.g. a gift for a friend)
+}
+
+model Transaction {
+  id          String     @id @default(cuid())
+  accountId   String
+  account     Account    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  postedAt    DateTime
+  amount      Decimal    @db.Decimal(14, 2)
+  payee       String?
+  description String?
+  memo        String?
+  pending     Boolean    @default(false)
+  source      TxnSource  @default(simplefin)
+  externalId  String?
+  categoryId  String?
+  category    Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // Who the spend was for (see Beneficiary enum).
+  beneficiary       Beneficiary?
+  beneficiaryUserId String?
+  beneficiaryUser   User?     @relation("TxnBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: SetNull)
+  beneficiaryNote   String?
+  visibility  Visibility @default(shared)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([accountId, externalId])
+  @@index([accountId, postedAt])
+  @@index([categoryId])
+  @@index([beneficiaryUserId])
+}
+
+enum CategoryKind {
+  income
+  expense
+}
+
+model Category {
+  id           String       @id @default(cuid())
+  name         String
+  group        String?
+  kind         CategoryKind @default(expense)
+  monthlyLimit Decimal?     @db.Decimal(14, 2)
+  color        String?
+  sortOrder    Int          @default(0)
+  archived     Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  transactions Transaction[]
+  rules        CategoryRule[]
+  budgets      Budget[]
+}
+
+enum RuleMatchType {
+  account            // any txn from a given account (e.g. Walmart card -> Groceries)
+  payee_contains
+  description_regex
+}
+
+model CategoryRule {
+  id             String        @id @default(cuid())
+  categoryId     String
+  category       Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  matchType      RuleMatchType
+  matchAccountId String?
+  pattern        String?
+  priority       Int           @default(0)
+  createdAt      DateTime      @default(now())
+
+  @@index([categoryId])
+}
+
+// Per-month budget (Phase 2). month = first day of the month.
+model Budget {
+  id         String   @id @default(cuid())
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  month      DateTime @db.Date
+  limit      Decimal  @db.Decimal(14, 2)
+
+  @@unique([categoryId, month])
+}
+
+// ----------------------------------------------------------------------------
+// Investments, goals & history
+// ----------------------------------------------------------------------------
+
+enum ContributionCadence {
+  per_paycheque
+  weekly
+  biweekly
+  monthly
+  annual
+  one_time
+}
+
+// Recurring contribution to an investment account (Phase 3).
+model Contribution {
+  id            String              @id @default(cuid())
+  accountId     String
+  account       Account             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  amount        Decimal             @db.Decimal(14, 2)
+  cadence       ContributionCadence
+  employerMatch Decimal?            @db.Decimal(14, 2)
+  note          String?
+  active        Boolean             @default(true)
+  startedAt     DateTime?
+  createdAt     DateTime            @default(now())
+
+  @@index([accountId])
+}
+
+// Kids' savings goal against a piggy-bank account (Phase 4).
+model Goal {
+  id           String    @id @default(cuid())
+  accountId    String
+  account      Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name         String
+  targetAmount Decimal   @db.Decimal(14, 2)
+  emoji        String?
+  achievedAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([accountId])
+}
+
+// Point-in-time balance for net-worth history/charts.
+model BalanceSnapshot {
+  id         String   @id @default(cuid())
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  capturedAt DateTime @default(now())
+  balance    Decimal  @db.Decimal(14, 2)
+
+  @@index([accountId, capturedAt])
+}
+
+// ----------------------------------------------------------------------------
+// Sync history / health
+// ----------------------------------------------------------------------------
+
+enum SyncStatus {
+  running
+  success
+  partial
+  error
+}
+
+model SyncRun {
+  id                String       @id @default(cuid())
+  institutionId     String?
+  institution       Institution? @relation(fields: [institutionId], references: [id], onDelete: SetNull)
+  status            SyncStatus   @default(running)
+  message           String?
+  accountsUpdated   Int          @default(0)
+  transactionsAdded Int          @default(0)
+  startedAt         DateTime     @default(now())
+  finishedAt        DateTime?
+
+  @@index([institutionId, startedAt])
+}

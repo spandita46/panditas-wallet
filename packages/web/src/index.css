@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* App is light-themed. Without this, dark-mode OSes render native form
+     controls dark on the light page — unreadable. (Full dark mode: later phase.) */
+  color-scheme: light;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+}
+
+/* Ensure form controls always have readable, WCAG AA contrast regardless of OS theme. */
+input,
+select,
+textarea {
+  @apply border border-slate-300 bg-white text-slate-900;
+}
+
+input::placeholder,
+textarea::placeholder {
+  @apply text-slate-500;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  @apply border-slate-900 outline-none;
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:outline-none;
+  }
+}
