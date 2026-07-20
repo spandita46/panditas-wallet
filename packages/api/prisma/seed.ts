@@ -8,16 +8,24 @@ config({ path: fileURLToPath(new URL("../../../.env", import.meta.url)) });
 const prisma = new PrismaClient();
 const hash = (s: string) => argon2.hash(s, { type: argon2.argon2id });
 
-// Starter expense categories tuned to how the family's cards are segmented.
+// Starter categories tuned to how the family's cards/income are segmented.
 const CATEGORIES = [
-  { name: "Groceries", group: "Essentials" },
-  { name: "Gas & Transport", group: "Essentials" },
-  { name: "Shopping", group: "Lifestyle" },
-  { name: "Kids", group: "Family" },
-  { name: "Dining & Takeout", group: "Lifestyle" },
-  { name: "Bills & Utilities", group: "Essentials" },
-  { name: "Car Loan", group: "Debt" },
-  { name: "Investments & Savings", group: "Savings" },
+  { name: "Groceries", group: "Essentials", kind: "expense" as const },
+  { name: "Gas & Transport", group: "Essentials", kind: "expense" as const },
+  { name: "Shopping", group: "Lifestyle", kind: "expense" as const },
+  { name: "Kids", group: "Family", kind: "expense" as const },
+  { name: "Dining & Takeout", group: "Lifestyle", kind: "expense" as const },
+  { name: "Bills & Utilities", group: "Essentials", kind: "expense" as const },
+  { name: "Car Loan", group: "Debt", kind: "expense" as const },
+  { name: "Investments & Savings", group: "Savings", kind: "expense" as const },
+  // Income
+  { name: "Payroll", group: "Income", kind: "income" as const },
+  { name: "Interest & Investment Income", group: "Income", kind: "income" as const },
+  { name: "Government Benefits", group: "Income", kind: "income" as const },
+  // Transfers — excluded from spending insights so the original card-side
+  // purchase isn't double-counted when the bill gets paid.
+  { name: "Credit Card Payment", group: "Transfers", kind: "transfer" as const },
+  { name: "Account Transfer", group: "Transfers", kind: "transfer" as const },
 ];
 
 async function main(): Promise<void> {
@@ -83,7 +91,7 @@ async function main(): Promise<void> {
     await prisma.category.upsert({
       where: { id: `seed-cat-${i}` },
       update: {},
-      create: { id: `seed-cat-${i}`, name: c.name, group: c.group, sortOrder: i },
+      create: { id: `seed-cat-${i}`, name: c.name, group: c.group, kind: c.kind, sortOrder: i },
     });
   }
 

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ACCOUNT_TYPES, formatMoney, type AccountDTO, type AccountType } from "@panditas/shared";
 import { api, ApiError } from "../api";
@@ -97,6 +98,21 @@ export function SettingsPage() {
       {message && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{message}</div>
       )}
+
+      {/* Categories & budgeting */}
+      <section className="rounded-xl bg-white p-5 ring-1 ring-slate-200">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Categories & Budgeting</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Add income/expense/transfer categories, set monthly limits, and manage auto-tag rules from
+          the Budget page.
+        </p>
+        <Link
+          to="/budget"
+          className="mt-3 inline-block rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+        >
+          Go to Budget →
+        </Link>
+      </section>
 
       {/* Connect SimpleFIN */}
       <section className="rounded-xl bg-white p-5 ring-1 ring-slate-200">

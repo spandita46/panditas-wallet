@@ -1,5 +1,6 @@
 import type { AccountType } from "@panditas/shared";
 import { prisma } from "./db.js";
+import { categorizeNewTransactions } from "./categorize.js";
 import { decrypt } from "./crypto.js";
 import { fetchAccounts, type NormalizedAccount } from "./simplefin.js";
 
@@ -62,6 +63,7 @@ async function upsertAccount(institutionId: string, a: NormalizedAccount): Promi
   const existingById = new Map(existing.map((t) => [t.externalId, t]));
 
   const toCreate = a.transactions.filter((t) => !existingById.has(t.id));
+  let newTxnIds: string[] = [];
   if (toCreate.length > 0) {
     await prisma.transaction.createMany({
       data: toCreate.map((t) => ({
@@ -77,6 +79,12 @@ async function upsertAccount(institutionId: string, a: NormalizedAccount): Promi
       })),
       skipDuplicates: true,
     });
+    // createMany doesn't return ids — look them up so they can be auto-categorized.
+    const created = await prisma.transaction.findMany({
+      where: { accountId: account.id, externalId: { in: toCreate.map((t) => t.id) } },
+      select: { id: true },
+    });
+    newTxnIds = created.map((t) => t.id);
   }
 
   for (const t of a.transactions) {
@@ -87,6 +95,10 @@ async function upsertAccount(institutionId: string, a: NormalizedAccount): Promi
         data: { pending: false, amount: t.amount, postedAt: t.posted },
       });
     }
+  }
+
+  if (newTxnIds.length > 0) {
+    await categorizeNewTransactions(newTxnIds);
   }
 
   return { accountId: account.id, added: toCreate.length };

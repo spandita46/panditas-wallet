@@ -5,6 +5,8 @@ import { LoginPage } from "./pages/Login";
 import { DashboardPage } from "./pages/Dashboard";
 import { SettingsPage } from "./pages/Settings";
 import { UsersPage } from "./pages/Users";
+import { TransactionsPage } from "./pages/Transactions";
+import { BudgetPage } from "./pages/Budget";
 import { KidHomePage } from "./pages/KidHome";
 
 export function App() {
@@ -36,6 +38,8 @@ export function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/transactions" element={<TransactionsPage />} />
+        <Route path="/budget" element={<BudgetPage />} />
         {user.role === "admin" && (
           <>
             <Route path="/settings" element={<SettingsPage />} />

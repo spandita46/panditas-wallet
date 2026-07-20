@@ -6,6 +6,9 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { env } from "./env.js";
 import { authRoutes } from "./routes/auth.js";
 import { accountRoutes } from "./routes/accounts.js";
+import { budgetRoutes } from "./routes/budgets.js";
+import { categoryRoutes } from "./routes/categories.js";
+import { insightsRoutes } from "./routes/insights.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { piggyBankRoutes } from "./routes/piggybank.js";
 import { simplefinRoutes } from "./routes/simplefin.js";
@@ -27,6 +30,9 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(simplefinRoutes, { prefix: "/api/simplefin" });
   await app.register(transactionRoutes, { prefix: "/api/transactions" });
   await app.register(piggyBankRoutes, { prefix: "/api/piggybank" });
+  await app.register(categoryRoutes, { prefix: "/api/categories" });
+  await app.register(budgetRoutes, { prefix: "/api/budgets" });
+  await app.register(insightsRoutes, { prefix: "/api/insights" });
 
   // Single-port deploy: also serve the built web app (LAN / NAS).
   if (env.SERVE_WEB) {

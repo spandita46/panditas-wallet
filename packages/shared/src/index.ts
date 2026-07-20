@@ -61,6 +61,15 @@ export const createUserSchema = z.object({
 });
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 
+// Minimal roster entry (no email/active-status) — safe for admin+adult use,
+// e.g. tagging "who a transaction was for" or assigning account ownership.
+export interface FamilyMemberDTO {
+  id: string;
+  name: string;
+  role: Role;
+  avatarEmoji: string | null;
+}
+
 // ----------------------------------------------------------------------------
 // Accounts
 // ----------------------------------------------------------------------------
@@ -124,6 +133,11 @@ export interface TransactionDTO {
   beneficiaryNote: string | null;
 }
 
+export interface TransactionListResponse {
+  items: TransactionDTO[];
+  total: number;
+}
+
 export const tagTransactionSchema = z.object({
   categoryId: z.string().nullable().optional(),
   beneficiary: z.enum(BENEFICIARIES).nullable().optional(),
@@ -146,6 +160,105 @@ export interface DashboardSummary {
   recentTransactions: TransactionDTO[];
   accountsByType: Record<AccountType, AccountDTO[]>;
   staleInstitutions: { id: string; name: string; status: string; lastSyncedAt: string | null }[];
+}
+
+// ----------------------------------------------------------------------------
+// Categories, rules & budgets (Phase 2)
+// ----------------------------------------------------------------------------
+
+export const CATEGORY_KINDS = ["income", "expense", "transfer"] as const;
+export type CategoryKind = (typeof CATEGORY_KINDS)[number];
+
+export const CATEGORY_KIND_LABELS: Record<CategoryKind, string> = {
+  income: "Income",
+  expense: "Expense",
+  transfer: "Transfer",
+};
+
+export const RULE_MATCH_TYPES = ["account", "payee_contains", "description_regex"] as const;
+export type RuleMatchType = (typeof RULE_MATCH_TYPES)[number];
+
+export interface CategoryDTO {
+  id: string;
+  name: string;
+  group: string | null;
+  kind: CategoryKind;
+  monthlyLimit: number | null;
+  color: string | null;
+  sortOrder: number;
+  archived: boolean;
+}
+
+export const createCategorySchema = z.object({
+  name: z.string().min(1).max(60),
+  group: z.string().max(60).optional(),
+  kind: z.enum(CATEGORY_KINDS).default("expense"),
+  monthlyLimit: z.number().nonnegative().nullable().optional(),
+  color: z.string().max(20).optional(),
+});
+export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
+
+export const updateCategorySchema = z.object({
+  name: z.string().min(1).max(60).optional(),
+  group: z.string().max(60).nullable().optional(),
+  monthlyLimit: z.number().nonnegative().nullable().optional(),
+  color: z.string().max(20).nullable().optional(),
+  archived: z.boolean().optional(),
+  sortOrder: z.number().int().optional(),
+});
+export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
+
+export interface CategoryRuleDTO {
+  id: string;
+  categoryId: string;
+  categoryName: string;
+  matchType: RuleMatchType;
+  matchAccountId: string | null;
+  matchAccountName: string | null;
+  pattern: string | null;
+  priority: number;
+}
+
+export const createCategoryRuleSchema = z
+  .object({
+    categoryId: z.string().min(1),
+    matchType: z.enum(RULE_MATCH_TYPES),
+    matchAccountId: z.string().nullable().optional(),
+    pattern: z.string().max(200).nullable().optional(),
+    priority: z.number().int().default(0),
+  })
+  .refine((r) => (r.matchType === "account" ? !!r.matchAccountId : !!r.pattern), {
+    message: "Account rules need matchAccountId; text rules need a pattern",
+  });
+export type CreateCategoryRuleInput = z.infer<typeof createCategoryRuleSchema>;
+
+export interface BudgetLineDTO {
+  categoryId: string;
+  categoryName: string;
+  group: string | null;
+  kind: CategoryKind;
+  limit: number | null;
+  isDefaultLimit: boolean; // true if no month-specific override exists
+  spent: number; // positive number = amount spent this month
+}
+
+export const setBudgetSchema = z.object({
+  categoryId: z.string().min(1),
+  month: z.string().regex(/^\d{4}-\d{2}-01$/, "month must be YYYY-MM-01"),
+  limit: z.number().nonnegative(),
+});
+export type SetBudgetInput = z.infer<typeof setBudgetSchema>;
+
+export interface SpendingBreakdownEntry {
+  key: string;
+  label: string;
+  total: number; // positive
+}
+
+export interface SpendingBreakdown {
+  month: string;
+  byOwner: SpendingBreakdownEntry[];
+  byBeneficiary: SpendingBreakdownEntry[];
 }
 
 // ----------------------------------------------------------------------------

@@ -151,6 +151,7 @@ model Account {
   goals          Goal[]
   snapshots      BalanceSnapshot[]
   access         AccountUser[]
+  categoryRules  CategoryRule[]
 
   @@unique([institutionId, externalId])
   @@index([type])
@@ -219,6 +220,10 @@ model Transaction {
 enum CategoryKind {
   income
   expense
+  // Money moved between the family's own accounts (e.g. paying a credit card
+  // from chequing). Excluded from spending insights to avoid double-counting
+  // the original card-side purchase.
+  transfer
 }
 
 model Category {
@@ -250,11 +255,13 @@ model CategoryRule {
   category       Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   matchType      RuleMatchType
   matchAccountId String?
+  matchAccount   Account?      @relation(fields: [matchAccountId], references: [id], onDelete: Cascade)
   pattern        String?
   priority       Int           @default(0)
   createdAt      DateTime      @default(now())
 
   @@index([categoryId])
+  @@index([matchAccountId])
 }
 
 // Per-month budget (Phase 2). month = first day of the month.

@@ -14,6 +14,17 @@ const updateUserSchema = z.object({
 });
 
 export async function userRoutes(app: FastifyInstance): Promise<void> {
+  // Minimal family roster (id/name/role only) for adults — used to tag "who a
+  // transaction was for" without exposing email/active-status admin data.
+  app.get("/lookup", { preHandler: requireRole("admin", "adult") }, async () => {
+    const users = await prisma.user.findMany({
+      where: { isActive: true },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, name: true, role: true, avatarEmoji: true },
+    });
+    return users;
+  });
+
   // Admin-only: create a user and assign a role.
   app.post("/", { preHandler: requireRole("admin") }, async (request, reply) => {
     const parsed = createUserSchema.safeParse(request.body);
