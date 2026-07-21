@@ -12,7 +12,7 @@ export function Layout() {
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `rounded-lg px-3 py-1.5 text-sm font-medium ${
-      isActive ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+      isActive ? "bg-accent-600 text-white" : "text-slate-600 hover:bg-slate-100"
     }`;
 
   return (

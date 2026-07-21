@@ -294,6 +294,15 @@ export interface SpendingBreakdown {
   byBeneficiary: SpendingBreakdownEntry[];
 }
 
+// Daily income/expense totals for the dashboard's calendar heatmap and trend
+// chart. `expense` is a positive magnitude; transfer-kind transactions are
+// excluded (same convention as SpendingBreakdown).
+export interface DailyFlowPoint {
+  date: string; // YYYY-MM-DD
+  income: number;
+  expense: number;
+}
+
 // ----------------------------------------------------------------------------
 // Piggy bank (kids)
 // ----------------------------------------------------------------------------

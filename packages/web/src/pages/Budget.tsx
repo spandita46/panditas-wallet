@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CATEGORY_KINDS,
@@ -14,6 +15,12 @@ import {
   type SpendingBreakdown,
 } from "@panditas/shared";
 import { api } from "../api";
+import { Card } from "../components/ui/Card";
+import { SectionHeader } from "../components/ui/SectionHeader";
+import { Combobox, type ComboboxItem } from "../components/ui/Combobox";
+import { Donut } from "../components/ui/Donut";
+import { monthEndDate, monthKey, monthLabel, shiftMonth } from "../lib/month";
+import { transactionsLink } from "../lib/transactionsLink";
 
 // Categories grouped by kind, expense first (most common), for <optgroup> rendering.
 const KIND_ORDER = ["expense", "income", "transfer"] as const;
@@ -25,16 +32,16 @@ function categoryOptgroups(categories: CategoryDTO[]) {
   })).filter((g) => g.items.length > 0);
 }
 
-function monthKey(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+function categoryPickOptions(categories: CategoryDTO[], placeholder: string): ComboboxItem[] {
+  return [
+    { value: "", label: placeholder },
+    ...categoryOptgroups(categories).flatMap((g) =>
+      g.items.map((c) => ({ value: c.id, label: c.name, group: g.label })),
+    ),
+  ];
 }
-function monthLabel(key: string): string {
-  return new Date(`${key}T00:00:00`).toLocaleDateString("en-CA", { month: "long", year: "numeric" });
-}
-function shiftMonth(key: string, delta: number): string {
-  const d = new Date(`${key}T00:00:00`);
-  d.setMonth(d.getMonth() + delta);
-  return monthKey(d);
+function accountOptions(accounts: AccountDTO[], placeholder: string): ComboboxItem[] {
+  return [{ value: "", label: placeholder }, ...accounts.map((a) => ({ value: a.id, label: a.displayName }))];
 }
 
 export function BudgetPage() {
@@ -84,32 +91,54 @@ export function BudgetPage() {
         </div>
       </header>
 
-      {/* Category budgets */}
-      <div className="space-y-5">
-        {Object.entries(grouped).map(([group, lines]) => (
-          <section key={group}>
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">{group}</h2>
-            <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
-              {lines.map((l) => (
-                <BudgetRow
-                  key={l.categoryId}
-                  line={l}
-                  onSetLimit={(limit) => setLimit.mutate({ categoryId: l.categoryId, limit })}
-                  onClearOverride={() => clearOverride.mutate(l.categoryId)}
-                />
-              ))}
-            </div>
-          </section>
-        ))}
-        {budgets.data?.length === 0 && (
-          <p className="text-sm text-slate-500">No categories yet — add one below.</p>
-        )}
-      </div>
-
-      {/* Breakdowns */}
+      {/* Breakdowns — who paid, who it was for */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <BreakdownCard title="Spending by who paid" entries={insights.data?.byOwner ?? []} />
         <BreakdownCard title="Spending by who it was for" entries={insights.data?.byBeneficiary ?? []} />
+      </div>
+
+      {/* Category budgets */}
+      <div className="space-y-5">
+        {Object.entries(grouped).map(([group, lines]) => {
+          const spentTotal = lines.reduce((sum, l) => sum + l.spent, 0);
+          const linesWithLimit = lines.filter((l) => l.limit !== null);
+          const limitTotal = linesWithLimit.reduce((sum, l) => sum + (l.limit ?? 0), 0);
+          return (
+            <section key={group}>
+              <div className="mb-2 flex items-baseline justify-between">
+                <Link
+                  to={transactionsLink({
+                    categoryIds: lines.map((l) => l.categoryId).join(","),
+                    groupLabel: group,
+                    from: month,
+                    to: monthEndDate(month),
+                  })}
+                  className="text-sm font-semibold uppercase tracking-wide text-slate-500 hover:text-accent-700 hover:underline"
+                >
+                  {group}
+                </Link>
+                <span className="text-xs font-medium text-slate-500">
+                  {formatMoney(spentTotal)}
+                  {linesWithLimit.length > 0 && <> of {formatMoney(limitTotal)} budgeted</>}
+                </span>
+              </div>
+              <div className="card">
+                {lines.map((l) => (
+                  <BudgetRow
+                    key={l.categoryId}
+                    line={l}
+                    month={month}
+                    onSetLimit={(limit) => setLimit.mutate({ categoryId: l.categoryId, limit })}
+                    onClearOverride={() => clearOverride.mutate(l.categoryId)}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+        {budgets.data?.length === 0 && (
+          <p className="text-sm text-slate-500">No categories yet — add one below.</p>
+        )}
       </div>
 
       {/* Manage categories & rules */}
@@ -125,10 +154,12 @@ export function BudgetPage() {
 
 function BudgetRow({
   line,
+  month,
   onSetLimit,
   onClearOverride,
 }: {
   line: BudgetLineDTO;
+  month: string;
   onSetLimit: (limit: number) => void;
   onClearOverride: () => void;
 }) {
@@ -140,7 +171,7 @@ function BudgetRow({
   const isExpense = line.kind === "expense";
   const pct = line.limit && line.limit > 0 ? Math.min(100, (line.spent / line.limit) * 100) : null;
   const over = isExpense && line.limit !== null && line.spent > line.limit;
-  const barColor = !isExpense ? "bg-slate-400" : over ? "bg-red-500" : (pct ?? 0) >= 80 ? "bg-amber-500" : "bg-green-500";
+  const barColor = !isExpense ? "bg-slate-400" : over ? "bg-liability-500" : (pct ?? 0) >= 80 ? "bg-amber-500" : "bg-asset-500";
 
   const commit = () => {
     const n = Number(value);
@@ -151,9 +182,14 @@ function BudgetRow({
   return (
     <div className="border-b border-slate-100 bg-white p-3 last:border-0">
       <div className="flex items-center justify-between gap-3">
-        <span className="font-medium text-slate-800">{line.categoryName}</span>
+        <Link
+          to={transactionsLink({ categoryId: line.categoryId, from: month, to: monthEndDate(month) })}
+          className="font-medium text-slate-800 hover:text-accent-700 hover:underline"
+        >
+          {line.categoryName}
+        </Link>
         <div className="flex items-center gap-2 text-sm">
-          <span className={over ? "font-semibold text-red-600" : "text-slate-700"}>{formatMoney(line.spent)}</span>
+          <span className={over ? "font-semibold text-liability-600" : "text-slate-700"}>{formatMoney(line.spent)}</span>
           <span className="text-slate-400">/</span>
           {editing ? (
             <input
@@ -189,25 +225,15 @@ function BudgetRow({
 }
 
 function BreakdownCard({ title, entries }: { title: string; entries: { key: string; label: string; total: number }[] }) {
-  const max = Math.max(1, ...entries.map((e) => e.total));
   return (
-    <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
-      <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">{title}</h3>
-      {entries.length === 0 && <p className="text-sm text-slate-500">No spending yet this month.</p>}
-      <div className="space-y-2">
-        {entries.map((e) => (
-          <div key={e.key}>
-            <div className="mb-0.5 flex justify-between text-sm">
-              <span className="text-slate-700">{e.label}</span>
-              <span className="font-medium text-slate-800">{formatMoney(e.total)}</span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
-              <div className="h-full rounded-full bg-slate-800" style={{ width: `${(e.total / max) * 100}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
+    <Card>
+      <SectionHeader>{title}</SectionHeader>
+      {entries.length === 0 ? (
+        <p className="text-sm text-slate-500">No spending yet this month.</p>
+      ) : (
+        <Donut data={entries.map((e) => ({ label: e.label, value: e.total }))} />
+      )}
+    </Card>
   );
 }
 
@@ -327,7 +353,7 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
   return (
     <div className="mt-4 space-y-6">
       {/* Categories */}
-      <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
+      <div className="card card-pad">
         <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Categories</h3>
         <p className="mb-2 text-xs text-slate-500">
           Click a category's group to change which section it appears under (e.g. "Essentials").
@@ -373,7 +399,7 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
           <button
             onClick={() => createCategory.mutate()}
             disabled={!form.name.trim() || createCategory.isPending}
-            className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded-lg bg-accent-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
             Add
           </button>
@@ -381,7 +407,7 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
       </div>
 
       {/* Rules */}
-      <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
+      <div className="card card-pad">
         <h3 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500">Auto-tag rules</h3>
         <p className="mb-3 text-xs text-slate-500">
           E.g. "Walmart card → Groceries". New transactions are tagged automatically on sync.
@@ -393,19 +419,14 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
                 {r.matchType === "account" ? r.matchAccountName : `"${r.pattern}"`} → <strong>{r.categoryName}</strong>
               </span>
               <div className="flex items-center gap-2">
-                <select
+                <Combobox
+                  options={accountOptions(accounts.data ?? [], "No linked account")}
                   value={r.linkedAccountId ?? ""}
-                  onChange={(e) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: e.target.value || null })}
+                  onChange={(v) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: v || null })}
                   title="Auto-link a transfer counterpart account"
-                  className="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
-                >
-                  <option value="">No linked account</option>
-                  {accounts.data?.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      links to {a.displayName}
-                    </option>
-                  ))}
-                </select>
+                  className="w-40"
+                  inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                />
                 <button onClick={() => deleteRule.mutate(r.id)} className="text-xs text-slate-500 underline">
                   Remove
                 </button>
@@ -415,18 +436,12 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
           {rules.data?.length === 0 && <p className="text-sm text-slate-500">No rules yet.</p>}
         </div>
         <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
-          <select value={ruleForm.categoryId} onChange={(e) => setRuleForm({ ...ruleForm, categoryId: e.target.value })} className="input max-w-[10rem]">
-            <option value="">Category…</option>
-            {categoryOptgroups(categories).map((g) => (
-              <optgroup key={g.kind} label={g.label}>
-                {g.items.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          <Combobox
+            options={categoryPickOptions(categories, "Category…")}
+            value={ruleForm.categoryId}
+            onChange={(v) => setRuleForm({ ...ruleForm, categoryId: v })}
+            className="max-w-[10rem]"
+          />
           <select
             value={ruleForm.matchType}
             onChange={(e) => setRuleForm({ ...ruleForm, matchType: e.target.value as RuleMatchType })}
@@ -439,14 +454,12 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
             ))}
           </select>
           {ruleForm.matchType === "account" ? (
-            <select value={ruleForm.matchAccountId} onChange={(e) => setRuleForm({ ...ruleForm, matchAccountId: e.target.value })} className="input max-w-[12rem]">
-              <option value="">Account…</option>
-              {accounts.data?.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.displayName}
-                </option>
-              ))}
-            </select>
+            <Combobox
+              options={accountOptions(accounts.data ?? [], "Account…")}
+              value={ruleForm.matchAccountId}
+              onChange={(v) => setRuleForm({ ...ruleForm, matchAccountId: v })}
+              className="max-w-[12rem]"
+            />
           ) : (
             <input
               value={ruleForm.pattern}
@@ -455,19 +468,13 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
               className="input max-w-[12rem]"
             />
           )}
-          <select
+          <Combobox
+            options={accountOptions(accounts.data ?? [], "Links to account… (optional)")}
             value={ruleForm.linkedAccountId}
-            onChange={(e) => setRuleForm({ ...ruleForm, linkedAccountId: e.target.value })}
+            onChange={(v) => setRuleForm({ ...ruleForm, linkedAccountId: v })}
             title="For transfers: auto-fill which account this links to"
-            className="input max-w-[12rem]"
-          >
-            <option value="">Links to account… (optional)</option>
-            {accounts.data?.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.displayName}
-              </option>
-            ))}
-          </select>
+            className="max-w-[12rem]"
+          />
           <button
             onClick={() => createRule.mutate()}
             disabled={
@@ -475,7 +482,7 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
               (ruleForm.matchType === "account" ? !ruleForm.matchAccountId : !ruleForm.pattern) ||
               createRule.isPending
             }
-            className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded-lg bg-accent-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
           >
             Add rule
           </button>

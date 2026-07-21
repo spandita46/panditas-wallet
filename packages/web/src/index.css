@@ -27,11 +27,24 @@ textarea::placeholder {
 input:focus,
 select:focus,
 textarea:focus {
-  @apply border-slate-900 outline-none;
+  @apply border-accent-500 outline-none ring-1 ring-accent-500;
 }
 
 @layer components {
   .input {
-    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-slate-900 focus:outline-none;
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-accent-500 focus:outline-none focus:ring-1 focus:ring-accent-500;
+  }
+
+  /* Shared panel wrapper — replaces the "rounded-xl ring-1 ring-slate-200 bg-white" combo repeated across pages. */
+  .card {
+    @apply overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200;
+  }
+
+  .card-pad {
+    @apply p-4;
+  }
+
+  .section-header {
+    @apply text-sm font-semibold uppercase tracking-wide text-slate-500;
   }
 }

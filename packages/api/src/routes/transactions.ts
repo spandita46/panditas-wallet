@@ -16,6 +16,9 @@ import { toTransactionDTO } from "../mappers.js";
 const listQuerySchema = z.object({
   accountId: z.string().optional(),
   categoryId: z.string().optional(),
+  // Comma-separated category ids — for "filter by this whole budget group"
+  // deep links. Takes precedence over categoryId/untaggedCategory when set.
+  categoryIds: z.string().optional(),
   untaggedCategory: z.coerce.boolean().optional(),
   beneficiary: z.enum(BENEFICIARIES).optional(),
   untaggedBeneficiary: z.coerce.boolean().optional(),
@@ -167,6 +170,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const {
       accountId,
       categoryId,
+      categoryIds,
       untaggedCategory,
       beneficiary,
       untaggedBeneficiary,
@@ -197,11 +201,18 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     // AND-array (rather than spreading multiple OR blocks into one object) so
     // the search filter and the amount filter — each their own OR — coexist
     // instead of one clobbering the other's key.
+    const categoryIdList = categoryIds ? categoryIds.split(",").filter(Boolean) : undefined;
+
     const where: Prisma.TransactionWhereInput = {
       account: { isTracked: true, isClosed: false },
       ...(accountId && { accountId }),
-      ...(categoryId && { categoryId }),
-      ...(untaggedCategory && { categoryId: null }),
+      ...(categoryIdList
+        ? { categoryId: { in: categoryIdList } }
+        : categoryId
+          ? { categoryId }
+          : untaggedCategory
+            ? { categoryId: null }
+            : {}),
       ...(beneficiary && { beneficiary }),
       ...(untaggedBeneficiary && { beneficiary: null }),
       ...(postedAt && { postedAt }),

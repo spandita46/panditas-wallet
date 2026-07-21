@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ACCOUNT_TYPES, formatMoney, type AccountDTO, type AccountType } from "@panditas/shared";
 import { api, ApiError } from "../api";
+import { Combobox } from "../components/ui/Combobox";
 
 interface SimplefinStatus {
   connections: { id: string; label: string | null; status: string; statusMessage: string | null; lastSyncedAt: string | null }[];
@@ -100,7 +101,7 @@ export function SettingsPage() {
       )}
 
       {/* Categories & budgeting */}
-      <section className="rounded-xl bg-white p-5 ring-1 ring-slate-200">
+      <section className="card card-pad">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Categories & Budgeting</h2>
         <p className="mt-1 text-sm text-slate-500">
           Add income/expense/transfer categories, set monthly limits, and manage auto-tag rules from
@@ -108,14 +109,14 @@ export function SettingsPage() {
         </p>
         <Link
           to="/budget"
-          className="mt-3 inline-block rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800"
+          className="mt-3 inline-block rounded-lg bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700"
         >
           Go to Budget →
         </Link>
       </section>
 
       {/* Connect SimpleFIN */}
-      <section className="rounded-xl bg-white p-5 ring-1 ring-slate-200">
+      <section className="card card-pad">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Connect SimpleFIN</h2>
         <p className="mt-1 text-sm text-slate-500">
           Paste the one-time <strong>setup token</strong> from SimpleFIN Bridge. It's claimed once and
@@ -131,7 +132,7 @@ export function SettingsPage() {
           <button
             onClick={() => claim.mutate()}
             disabled={!token.trim() || claim.isPending}
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            className="rounded-lg bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50"
           >
             {claim.isPending ? "Claiming…" : "Connect"}
           </button>
@@ -150,7 +151,7 @@ export function SettingsPage() {
             {sync.isPending ? "Syncing…" : "Sync now"}
           </button>
         </div>
-        <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
+        <div className="card">
           {status.data?.institutions.length === 0 && (
             <p className="bg-white p-4 text-sm text-slate-500">No institutions yet. Connect SimpleFIN above.</p>
           )}
@@ -182,7 +183,7 @@ export function SettingsPage() {
           Untick <strong>Track</strong> to exclude an account (e.g. a duplicate or unused one) from
           net worth and all lists.
         </p>
-        <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
+        <div className="card">
           {accounts.data?.map((a) => (
             <AccountRow
               key={a.id}
@@ -255,19 +256,14 @@ function AccountRow({
           />
           Track
         </label>
-        <select
+        <Combobox
+          options={[{ value: "", label: "Shared" }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
           value={account.ownerUserId ?? ""}
-          onChange={(e) => onOwner(e.target.value || null)}
+          onChange={(v) => onOwner(v || null)}
           title="Account owner (for individual spending)"
-          className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
-        >
-          <option value="">Shared</option>
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.name}
-            </option>
-          ))}
-        </select>
+          className="w-36"
+          inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-sm"
+        />
         <select
           value={account.type}
           onChange={(e) => onType(e.target.value as AccountType)}

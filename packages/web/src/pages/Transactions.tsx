@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BENEFICIARIES,
@@ -17,6 +18,8 @@ import {
   type TransactionRowDTO,
 } from "@panditas/shared";
 import { api } from "../api";
+import { Combobox, type ComboboxItem } from "../components/ui/Combobox";
+import { SegmentedControl } from "../components/ui/SegmentedControl";
 
 const PAGE_SIZE = 30;
 
@@ -28,6 +31,27 @@ function categoryOptgroups(categories: CategoryDTO[]) {
     label: CATEGORY_KIND_LABELS[kind],
     items: categories.filter((c) => c.kind === kind),
   })).filter((g) => g.items.length > 0);
+}
+
+// Combobox option builders — accounts/family are flat lists, categories stay
+// grouped by kind (in the same expense/income/transfer order as above).
+function accountOptions(accounts: AccountDTO[], placeholder: string, excludeId?: string): ComboboxItem[] {
+  return [
+    { value: "", label: placeholder },
+    ...accounts.filter((a) => a.id !== excludeId).map((a) => ({ value: a.id, label: a.displayName })),
+  ];
+}
+function categoryPickOptions(categories: CategoryDTO[], placeholder: string, extra: ComboboxItem[] = []): ComboboxItem[] {
+  return [
+    { value: "", label: placeholder },
+    ...extra,
+    ...categoryOptgroups(categories).flatMap((g) =>
+      g.items.map((c) => ({ value: c.id, label: c.name, group: g.label })),
+    ),
+  ];
+}
+function familyOptions(family: FamilyMemberDTO[], placeholder: string): ComboboxItem[] {
+  return [{ value: "", label: placeholder }, ...family.map((f) => ({ value: f.id, label: f.name }))];
 }
 
 type DatePreset = "all" | "this_month" | "last_month" | "custom";
@@ -46,13 +70,25 @@ function lastMonthKey(): string {
 
 export function TransactionsPage() {
   const queryClient = useQueryClient();
-  const [accountId, setAccountId] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState(""); // "", "__uncategorized__", or a categoryId
+  // Seeded once from the URL — lets Dashboard/Budget deep-link into a
+  // pre-filtered view (e.g. a calendar day, a credit card, a budget category).
+  const [searchParams] = useSearchParams();
+  const initialGroupIds = (searchParams.get("categoryIds") ?? "").split(",").filter(Boolean);
+
+  const [accountId, setAccountId] = useState(() => searchParams.get("accountId") ?? "");
+  const [categoryFilter, setCategoryFilter] = useState(() => searchParams.get("categoryId") ?? ""); // "", "__uncategorized__", or a categoryId
+  const [categoryGroup, setCategoryGroup] = useState<{ ids: string[]; label: string } | null>(() =>
+    initialGroupIds.length > 0
+      ? { ids: initialGroupIds, label: searchParams.get("groupLabel") ?? "Selected categories" }
+      : null,
+  );
   const [beneficiaryFilter, setBeneficiaryFilter] = useState(""); // "", "__untagged__", or a Beneficiary
   const [search, setSearch] = useState("");
-  const [datePreset, setDatePreset] = useState<DatePreset>("all");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [datePreset, setDatePreset] = useState<DatePreset>(() =>
+    searchParams.get("from") || searchParams.get("to") ? "custom" : "all",
+  );
+  const [fromDate, setFromDate] = useState(() => searchParams.get("from") ?? "");
+  const [toDate, setToDate] = useState(() => searchParams.get("to") ?? "");
   const [minAmount, setMinAmount] = useState("");
   const [maxAmount, setMaxAmount] = useState("");
   const [page, setPage] = useState(0);
@@ -73,8 +109,8 @@ export function TransactionsPage() {
 
   const params = new URLSearchParams();
   if (accountId) params.set("accountId", accountId);
-  if (categoryFilter === "__uncategorized__")
-    params.set("untaggedCategory", "1");
+  if (categoryGroup) params.set("categoryIds", categoryGroup.ids.join(","));
+  else if (categoryFilter === "__uncategorized__") params.set("untaggedCategory", "1");
   else if (categoryFilter) params.set("categoryId", categoryFilter);
   if (beneficiaryFilter === "__untagged__")
     params.set("untaggedBeneficiary", "1");
@@ -174,42 +210,43 @@ export function TransactionsPage() {
       )}
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-2 rounded-xl bg-white p-3 ring-1 ring-slate-200">
-        <select
+      <div className="card flex flex-wrap gap-2 p-3">
+        <Combobox
+          options={accountOptions(accounts.data ?? [], "All accounts")}
           value={accountId}
-          onChange={(e) => {
-            setAccountId(e.target.value);
+          onChange={(v) => {
+            setAccountId(v);
             setPage(0);
           }}
-          className="input max-w-[12rem]"
-        >
-          <option value="">All accounts</option>
-          {accounts.data?.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.displayName}
-            </option>
-          ))}
-        </select>
-        <select
-          value={categoryFilter}
-          onChange={(e) => {
-            setCategoryFilter(e.target.value);
-            setPage(0);
-          }}
-          className="input max-w-[12rem]"
-        >
-          <option value="">All categories</option>
-          <option value="__uncategorized__">Uncategorized</option>
-          {categoryOptgroups(categories.data ?? []).map((g) => (
-            <optgroup key={g.kind} label={g.label}>
-              {g.items.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+          className="max-w-[12rem]"
+        />
+        {categoryGroup ? (
+          <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg bg-accent-50 px-3 py-2 text-sm text-accent-800 ring-1 ring-accent-200">
+            Group: <strong className="truncate">{categoryGroup.label}</strong>
+            <button
+              onClick={() => {
+                setCategoryGroup(null);
+                setPage(0);
+              }}
+              className="shrink-0 text-accent-600 hover:text-accent-900"
+              title="Clear group filter"
+            >
+              ✕
+            </button>
+          </span>
+        ) : (
+          <Combobox
+            options={categoryPickOptions(categories.data ?? [], "All categories", [
+              { value: "__uncategorized__", label: "Uncategorized" },
+            ])}
+            value={categoryFilter}
+            onChange={(v) => {
+              setCategoryFilter(v);
+              setPage(0);
+            }}
+            className="max-w-[12rem]"
+          />
+        )}
         <select
           value={beneficiaryFilter}
           onChange={(e) => {
@@ -235,19 +272,19 @@ export function TransactionsPage() {
           placeholder="Search payee/description…"
           className="input max-w-[16rem]"
         />
-        <select
+        <SegmentedControl
           value={datePreset}
-          onChange={(e) => {
-            setDatePreset(e.target.value as DatePreset);
+          onChange={(v) => {
+            setDatePreset(v);
             setPage(0);
           }}
-          className="input max-w-[10rem]"
-        >
-          <option value="all">All dates</option>
-          <option value="this_month">This month</option>
-          <option value="last_month">Last month</option>
-          <option value="custom">Custom range…</option>
-        </select>
+          options={[
+            { value: "all", label: "All" },
+            { value: "this_month", label: "This month" },
+            { value: "last_month", label: "Last month" },
+            { value: "custom", label: "Custom…" },
+          ]}
+        />
         {datePreset === "custom" && (
           <>
             <input
@@ -301,7 +338,7 @@ export function TransactionsPage() {
       </div>
 
       {/* List */}
-      <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
+      <div className="card">
         {txns.isLoading && (
           <p className="bg-white p-4 text-sm text-slate-500">Loading…</p>
         )}
@@ -467,22 +504,13 @@ function TxnRow({
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <select
+        <Combobox
+          options={categoryPickOptions(categories, "Uncategorized")}
           value={txn.categoryId ?? ""}
-          onChange={(e) => onSave({ categoryId: e.target.value || null })}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
-        >
-          <option value="">Uncategorized</option>
-          {categoryOptgroups(categories).map((g) => (
-            <optgroup key={g.kind} label={g.label}>
-              {g.items.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
+          onChange={(v) => onSave({ categoryId: v || null })}
+          className="w-40"
+          inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+        />
 
         <select
           value={txn.beneficiary ?? ""}
@@ -502,44 +530,32 @@ function TxnRow({
         </select>
 
         {isTransferKind && (
-          <select
+          <Combobox
+            options={accountOptions(
+              accounts,
+              txn.amount < 0 ? "To which account?" : "From which account?",
+              txn.accountId,
+            )}
             value={txn.transferAccountId ?? ""}
-            onChange={(e) =>
-              onSave({ transferAccountId: e.target.value || null })
-            }
-            className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
-          >
-            <option value="">
-              {txn.amount < 0 ? "To which account?" : "From which account?"}
-            </option>
-            {accounts
-              .filter((a) => a.id !== txn.accountId)
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.displayName}
-                </option>
-              ))}
-          </select>
+            onChange={(v) => onSave({ transferAccountId: v || null })}
+            className="w-40"
+            inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+          />
         )}
 
         {txn.beneficiary === "family_member" && (
-          <select
+          <Combobox
+            options={familyOptions(family, "Which family member?")}
             value={txn.beneficiaryUserId ?? ""}
-            onChange={(e) =>
+            onChange={(v) =>
               onSave({
                 beneficiary: "family_member",
-                beneficiaryUserId: e.target.value || null,
+                beneficiaryUserId: v || null,
               })
             }
-            className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
-          >
-            <option value="">Which family member?</option>
-            {family.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </select>
+            className="w-40"
+            inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+          />
         )}
 
         {txn.beneficiary === "external" && (
@@ -656,36 +672,20 @@ function CreateRuleForm({
             className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
           />
         )}
-        <select
+        <Combobox
+          options={categoryPickOptions(categories, "Category…")}
           value={categoryId}
-          onChange={(e) => setCategoryId(e.target.value)}
-          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-        >
-          <option value="">Category…</option>
-          {categoryOptgroups(categories).map((g) => (
-            <optgroup key={g.kind} label={g.label}>
-              {g.items.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-        <select
+          onChange={setCategoryId}
+          className="w-40"
+          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+        />
+        <Combobox
+          options={accountOptions(accounts, "Links to account… (optional)", txn.accountId)}
           value={linkedAccountId}
-          onChange={(e) => setLinkedAccountId(e.target.value)}
-          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-        >
-          <option value="">Links to account… (optional)</option>
-          {accounts
-            .filter((a) => a.id !== txn.accountId)
-            .map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.displayName}
-              </option>
-            ))}
-        </select>
+          onChange={setLinkedAccountId}
+          className="w-48"
+          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+        />
       </div>
       <div className="flex justify-end gap-3">
         <button onClick={onCancel} className="text-xs text-slate-500 underline">
@@ -694,7 +694,7 @@ function CreateRuleForm({
         <button
           onClick={submit}
           disabled={!canCreate}
-          className="rounded-lg bg-slate-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+          className="rounded-lg bg-accent-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
         >
           Create rule
         </button>

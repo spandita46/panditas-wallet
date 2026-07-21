@@ -1,12 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import type { Beneficiary, SpendingBreakdown, SpendingBreakdownEntry } from "@panditas/shared";
+import type { Beneficiary, DailyFlowPoint, SpendingBreakdown, SpendingBreakdownEntry } from "@panditas/shared";
 import { BENEFICIARY_LABELS } from "@panditas/shared";
 import { prisma } from "../db.js";
 import { requireRole } from "../auth.js";
 
 const monthQuerySchema = z.object({
   month: z.string().regex(/^\d{4}-\d{2}-01$/, "month must be YYYY-MM-01"),
+});
+
+const timeseriesQuerySchema = z.object({
+  months: z.coerce.number().int().min(1).max(12).default(3),
 });
 
 export async function insightsRoutes(app: FastifyInstance): Promise<void> {
@@ -70,6 +74,43 @@ export async function insightsRoutes(app: FastifyInstance): Promise<void> {
       byOwner: [...byOwner.values()].map((e) => ({ ...e, total: round(e.total) })).sort(sortDesc),
       byBeneficiary: [...byBeneficiary.values()].map((e) => ({ ...e, total: round(e.total) })).sort(sortDesc),
     };
+    return result;
+  });
+
+  // Daily income/expense totals for the dashboard's calendar heatmap + trend
+  // chart. Small household-scale dataset — aggregated in JS rather than a
+  // SQL date-trunc grouping.
+  app.get("/timeseries", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const parsed = timeseriesQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid query" });
+
+    const end = new Date();
+    const start = new Date(end);
+    start.setMonth(start.getMonth() - parsed.data.months);
+
+    const txns = await prisma.transaction.findMany({
+      where: {
+        postedAt: { gte: start, lte: end },
+        account: { isTracked: true, isClosed: false },
+        NOT: { category: { kind: "transfer" } },
+      },
+      select: { postedAt: true, amount: true },
+    });
+
+    const byDay = new Map<string, { income: number; expense: number }>();
+    for (const t of txns) {
+      const day = t.postedAt.toISOString().slice(0, 10);
+      const entry = byDay.get(day) ?? { income: 0, expense: 0 };
+      const amt = Number(t.amount);
+      if (amt >= 0) entry.income += amt;
+      else entry.expense += -amt;
+      byDay.set(day, entry);
+    }
+
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const result: DailyFlowPoint[] = [...byDay.entries()]
+      .map(([date, v]) => ({ date, income: round(v.income), expense: round(v.expense) }))
+      .sort((a, b) => a.date.localeCompare(b.date));
     return result;
   });
 }

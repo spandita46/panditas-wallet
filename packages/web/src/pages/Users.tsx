@@ -82,7 +82,7 @@ export function UsersPage() {
         <p className="text-sm text-slate-600">Add family members and assign roles. Assign account ownership in Settings.</p>
       </div>
 
-      <section className="rounded-xl bg-white p-5 ring-1 ring-slate-200">
+      <section className="card card-pad">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Add a user</h2>
         <form onSubmit={onSubmit} className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Field label="Name">
@@ -123,7 +123,7 @@ export function UsersPage() {
 
           <div className="flex items-end sm:col-span-2">
             {error && <p className="mr-4 text-sm text-red-600">{error}</p>}
-            <button type="submit" disabled={create.isPending} className="ml-auto rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50">
+            <button type="submit" disabled={create.isPending} className="ml-auto rounded-lg bg-accent-600 px-4 py-2 text-sm font-medium text-white hover:bg-accent-700 disabled:opacity-50">
               {create.isPending ? "Adding…" : "Add user"}
             </button>
           </div>
@@ -135,7 +135,7 @@ export function UsersPage() {
           <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Family members</h2>
           {secretMsg && <span className="text-xs text-slate-600">{secretMsg}</span>}
         </div>
-        <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
+        <div className="card">
           {users.data?.map((u) => (
             <UserRow
               key={u.id}
@@ -238,7 +238,7 @@ function UserRow({
           <button
             onClick={saveSecret}
             disabled={secret.length < minLen}
-            className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+            className="rounded-lg bg-accent-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-50"
           >
             Save
           </button>
