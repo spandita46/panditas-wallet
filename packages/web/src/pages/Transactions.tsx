@@ -14,6 +14,7 @@ import {
   type RuleMatchType,
   type TransactionDTO,
   type TransactionListResponse,
+  type TransactionRowDTO,
 } from "@panditas/shared";
 import { api } from "../api";
 
@@ -52,18 +53,31 @@ export function TransactionsPage() {
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
+  const [minAmount, setMinAmount] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
   const [page, setPage] = useState(0);
   const [ruleMessage, setRuleMessage] = useState<string | null>(null);
 
-  const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.get<AccountDTO[]>("/accounts") });
-  const categories = useQuery({ queryKey: ["categories"], queryFn: () => api.get<CategoryDTO[]>("/categories") });
-  const family = useQuery({ queryKey: ["family-lookup"], queryFn: () => api.get<FamilyMemberDTO[]>("/users/lookup") });
+  const accounts = useQuery({
+    queryKey: ["accounts"],
+    queryFn: () => api.get<AccountDTO[]>("/accounts"),
+  });
+  const categories = useQuery({
+    queryKey: ["categories"],
+    queryFn: () => api.get<CategoryDTO[]>("/categories"),
+  });
+  const family = useQuery({
+    queryKey: ["family-lookup"],
+    queryFn: () => api.get<FamilyMemberDTO[]>("/users/lookup"),
+  });
 
   const params = new URLSearchParams();
   if (accountId) params.set("accountId", accountId);
-  if (categoryFilter === "__uncategorized__") params.set("untaggedCategory", "1");
+  if (categoryFilter === "__uncategorized__")
+    params.set("untaggedCategory", "1");
   else if (categoryFilter) params.set("categoryId", categoryFilter);
-  if (beneficiaryFilter === "__untagged__") params.set("untaggedBeneficiary", "1");
+  if (beneficiaryFilter === "__untagged__")
+    params.set("untaggedBeneficiary", "1");
   else if (beneficiaryFilter) params.set("beneficiary", beneficiaryFilter);
   if (search.trim()) params.set("search", search.trim());
   if (datePreset === "this_month") params.set("month", thisMonthKey());
@@ -72,30 +86,48 @@ export function TransactionsPage() {
     if (fromDate) params.set("from", fromDate);
     if (toDate) params.set("to", toDate);
   }
+  if (minAmount.trim()) params.set("minAmount", minAmount.trim());
+  if (maxAmount.trim()) params.set("maxAmount", maxAmount.trim());
   params.set("limit", String(PAGE_SIZE));
   params.set("offset", String(page * PAGE_SIZE));
 
   const txns = useQuery({
     queryKey: ["transactions", params.toString()],
-    queryFn: () => api.get<TransactionListResponse>(`/transactions?${params.toString()}`),
+    queryFn: () =>
+      api.get<TransactionListResponse>(`/transactions?${params.toString()}`),
   });
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["transactions"] });
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["transactions"] });
 
   const tag = useMutation({
-    mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`/transactions/${v.id}`, v.body),
+    mutationFn: (v: { id: string; body: Record<string, unknown> }) =>
+      api.patch(`/transactions/${v.id}`, v.body),
     onSuccess: invalidate,
   });
 
   const recategorize = useMutation({
-    mutationFn: () => api.post<{ updated: number }>("/transactions/recategorize"),
+    mutationFn: () =>
+      api.post<{ updated: number }>("/transactions/recategorize"),
+    onSuccess: invalidate,
+  });
+
+  const linkTransfer = useMutation({
+    mutationFn: (v: { id: string; counterpartTransactionId: string }) =>
+      api.post(`/transactions/${v.id}/link-transfer`, {
+        counterpartTransactionId: v.counterpartTransactionId,
+      }),
     onSuccess: invalidate,
   });
 
   // Create a rule, apply it to the transaction it was created from, then sweep
   // any other uncategorized transactions it now matches.
   const createRule = useMutation({
-    mutationFn: async (v: { rule: CreateCategoryRuleInput; txnId: string; txnPatch: Record<string, unknown> }) => {
+    mutationFn: async (v: {
+      rule: CreateCategoryRuleInput;
+      txnId: string;
+      txnPatch: Record<string, unknown>;
+    }) => {
       await api.post("/categories/rules", v.rule);
       await api.patch(`/transactions/${v.txnId}`, v.txnPatch);
       return api.post<{ updated: number }>("/transactions/recategorize");
@@ -103,7 +135,9 @@ export function TransactionsPage() {
     onSuccess: (res) => {
       invalidate();
       queryClient.invalidateQueries({ queryKey: ["category-rules"] });
-      setRuleMessage(`Rule created.${res.updated > 0 ? ` ${res.updated} other transaction(s) tagged.` : ""}`);
+      setRuleMessage(
+        `Rule created.${res.updated > 0 ? ` ${res.updated} other transaction(s) tagged.` : ""}`,
+      );
       setTimeout(() => setRuleMessage(null), 5000);
     },
   });
@@ -115,25 +149,40 @@ export function TransactionsPage() {
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Transactions</h1>
-          <p className="text-sm text-slate-600">Tag each one with a category and who it was for.</p>
+          <h1 className="text-2xl font-semibold text-slate-900">
+            Transactions
+          </h1>
+          <p className="text-sm text-slate-600">
+            Tag each one with a category and who it was for.
+          </p>
         </div>
         <button
           onClick={() => recategorize.mutate()}
           disabled={recategorize.isPending}
           className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
         >
-          {recategorize.isPending ? "Applying rules…" : "Recategorize uncategorized"}
+          {recategorize.isPending
+            ? "Applying rules…"
+            : "Recategorize uncategorized"}
         </button>
       </header>
 
       {ruleMessage && (
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{ruleMessage}</div>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+          {ruleMessage}
+        </div>
       )}
 
       {/* Filters */}
       <div className="flex flex-wrap gap-2 rounded-xl bg-white p-3 ring-1 ring-slate-200">
-        <select value={accountId} onChange={(e) => { setAccountId(e.target.value); setPage(0); }} className="input max-w-[12rem]">
+        <select
+          value={accountId}
+          onChange={(e) => {
+            setAccountId(e.target.value);
+            setPage(0);
+          }}
+          className="input max-w-[12rem]"
+        >
           <option value="">All accounts</option>
           {accounts.data?.map((a) => (
             <option key={a.id} value={a.id}>
@@ -141,7 +190,14 @@ export function TransactionsPage() {
             </option>
           ))}
         </select>
-        <select value={categoryFilter} onChange={(e) => { setCategoryFilter(e.target.value); setPage(0); }} className="input max-w-[12rem]">
+        <select
+          value={categoryFilter}
+          onChange={(e) => {
+            setCategoryFilter(e.target.value);
+            setPage(0);
+          }}
+          className="input max-w-[12rem]"
+        >
           <option value="">All categories</option>
           <option value="__uncategorized__">Uncategorized</option>
           {categoryOptgroups(categories.data ?? []).map((g) => (
@@ -154,7 +210,14 @@ export function TransactionsPage() {
             </optgroup>
           ))}
         </select>
-        <select value={beneficiaryFilter} onChange={(e) => { setBeneficiaryFilter(e.target.value); setPage(0); }} className="input max-w-[12rem]">
+        <select
+          value={beneficiaryFilter}
+          onChange={(e) => {
+            setBeneficiaryFilter(e.target.value);
+            setPage(0);
+          }}
+          className="input max-w-[12rem]"
+        >
           <option value="">Anyone / anything</option>
           <option value="__untagged__">Untagged</option>
           {BENEFICIARIES.map((b) => (
@@ -165,13 +228,19 @@ export function TransactionsPage() {
         </select>
         <input
           value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(0);
+          }}
           placeholder="Search payee/description…"
           className="input max-w-[16rem]"
         />
         <select
           value={datePreset}
-          onChange={(e) => { setDatePreset(e.target.value as DatePreset); setPage(0); }}
+          onChange={(e) => {
+            setDatePreset(e.target.value as DatePreset);
+            setPage(0);
+          }}
           className="input max-w-[10rem]"
         >
           <option value="all">All dates</option>
@@ -184,25 +253,62 @@ export function TransactionsPage() {
             <input
               type="date"
               value={fromDate}
-              onChange={(e) => { setFromDate(e.target.value); setPage(0); }}
+              onChange={(e) => {
+                setFromDate(e.target.value);
+                setPage(0);
+              }}
               className="input max-w-[9rem]"
             />
             <span className="self-center text-sm text-slate-500">to</span>
             <input
               type="date"
               value={toDate}
-              onChange={(e) => { setToDate(e.target.value); setPage(0); }}
+              onChange={(e) => {
+                setToDate(e.target.value);
+                setPage(0);
+              }}
               className="input max-w-[9rem]"
             />
           </>
         )}
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          step="0.01"
+          value={minAmount}
+          onChange={(e) => {
+            setMinAmount(e.target.value);
+            setPage(0);
+          }}
+          placeholder="Min $"
+          className="input max-w-[6.5rem]"
+        />
+        <span className="self-center text-sm text-slate-500">–</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          step="0.01"
+          value={maxAmount}
+          onChange={(e) => {
+            setMaxAmount(e.target.value);
+            setPage(0);
+          }}
+          placeholder="Max $"
+          className="input max-w-[6.5rem]"
+        />
       </div>
 
       {/* List */}
       <div className="overflow-hidden rounded-xl ring-1 ring-slate-200">
-        {txns.isLoading && <p className="bg-white p-4 text-sm text-slate-500">Loading…</p>}
+        {txns.isLoading && (
+          <p className="bg-white p-4 text-sm text-slate-500">Loading…</p>
+        )}
         {txns.data?.items.length === 0 && (
-          <p className="bg-white p-4 text-sm text-slate-500">No transactions match these filters.</p>
+          <p className="bg-white p-4 text-sm text-slate-500">
+            No transactions match these filters.
+          </p>
         )}
         {txns.data?.items.map((t) => (
           <TxnRow
@@ -212,7 +318,12 @@ export function TransactionsPage() {
             family={family.data ?? []}
             accounts={accounts.data ?? []}
             onSave={(body) => tag.mutate({ id: t.id, body })}
-            onCreateRule={(rule, txnPatch) => createRule.mutate({ rule, txnId: t.id, txnPatch })}
+            onCreateRule={(rule, txnPatch) =>
+              createRule.mutate({ rule, txnId: t.id, txnPatch })
+            }
+            onLinkTransfer={(counterpartTransactionId) =>
+              linkTransfer.mutate({ id: t.id, counterpartTransactionId })
+            }
           />
         ))}
       </div>
@@ -221,9 +332,17 @@ export function TransactionsPage() {
       {total > PAGE_SIZE && (
         <div className="flex items-center justify-between text-sm text-slate-600">
           <span>
-            {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+            {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of{" "}
+            {total}
           </span>
           <div className="flex gap-2">
+            <button
+              onClick={() => setPage((p) => 0)}
+              disabled={page === 0}
+              className="rounded-lg border border-slate-300 px-3 py-1 disabled:opacity-40"
+            >
+              First
+            </button>
             <button
               onClick={() => setPage((p) => Math.max(0, p - 1))}
               disabled={page === 0}
@@ -237,6 +356,13 @@ export function TransactionsPage() {
               className="rounded-lg border border-slate-300 px-3 py-1 disabled:opacity-40"
             >
               Next
+            </button>
+            <button
+              onClick={() => setPage((p) => pageCount - 1)}
+              disabled={page >= pageCount - 1}
+              className="rounded-lg border border-slate-300 px-3 py-1 disabled:opacity-40"
+            >
+              Last
             </button>
           </div>
         </div>
@@ -252,27 +378,39 @@ function TxnRow({
   accounts,
   onSave,
   onCreateRule,
+  onLinkTransfer,
 }: {
-  txn: TransactionDTO;
+  txn: TransactionRowDTO;
   categories: CategoryDTO[];
   family: FamilyMemberDTO[];
   accounts: AccountDTO[];
   onSave: (body: Record<string, unknown>) => void;
-  onCreateRule: (rule: CreateCategoryRuleInput, txnPatch: Record<string, unknown>) => void;
+  onCreateRule: (
+    rule: CreateCategoryRuleInput,
+    txnPatch: Record<string, unknown>,
+  ) => void;
+  onLinkTransfer: (counterpartTransactionId: string) => void;
 }) {
   const [note, setNote] = useState(txn.beneficiaryNote ?? "");
   const [showRuleForm, setShowRuleForm] = useState(false);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const category = categories.find((c) => c.id === txn.categoryId);
   const isTransferKind = category?.kind === "transfer";
+  const showSuggestion = txn.transferSuggestion && !txn.transferAccountId && !suggestionDismissed;
 
   return (
     <div className="border-b border-slate-100 bg-white p-3 last:border-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="truncate font-medium text-slate-800">{txn.payee ?? txn.description ?? "—"}</p>
+          <p className="truncate font-medium text-slate-800">
+            {txn.payee ?? txn.description ?? "—"}
+          </p>
           <p className="text-xs text-slate-500">
-            {new Date(txn.postedAt).toLocaleDateString("en-CA")} · {txn.accountName}
-            {txn.pending && <span className="ml-1 text-amber-600">· pending</span>}
+            {new Date(txn.postedAt).toLocaleDateString("en-CA")} ·{" "}
+            {txn.accountName}
+            {txn.pending && (
+              <span className="ml-1 text-amber-600">· pending</span>
+            )}
             {txn.transferAccountName && (
               <span className="ml-1 font-medium text-slate-600">
                 {txn.amount < 0 ? " → " : " ← "}
@@ -288,10 +426,32 @@ function TxnRow({
         >
           <RuleIcon />
         </button>
-        <span className={`shrink-0 font-medium ${txn.amount < 0 ? "text-slate-800" : "text-green-600"}`}>
+        <span
+          className={`shrink-0 font-medium ${txn.amount < 0 ? "text-slate-800" : "text-green-600"}`}
+        >
           {formatMoney(txn.amount)}
         </span>
       </div>
+
+      {showSuggestion && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+          <span>
+            Looks like a transfer with <strong>{txn.transferSuggestion!.accountName}</strong> (
+            {txn.transferSuggestion!.confidence}% match)
+          </span>
+          <div className="flex shrink-0 gap-3">
+            <button onClick={() => setSuggestionDismissed(true)} className="text-blue-700 underline">
+              Dismiss
+            </button>
+            <button
+              onClick={() => onLinkTransfer(txn.transferSuggestion!.candidateTransactionId)}
+              className="rounded-lg bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700"
+            >
+              Link
+            </button>
+          </div>
+        </div>
+      )}
 
       {showRuleForm && (
         <CreateRuleForm
@@ -326,7 +486,11 @@ function TxnRow({
 
         <select
           value={txn.beneficiary ?? ""}
-          onChange={(e) => onSave({ beneficiary: (e.target.value || null) as Beneficiary | null })}
+          onChange={(e) =>
+            onSave({
+              beneficiary: (e.target.value || null) as Beneficiary | null,
+            })
+          }
           className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
         >
           <option value="">Who was it for?</option>
@@ -340,10 +504,14 @@ function TxnRow({
         {isTransferKind && (
           <select
             value={txn.transferAccountId ?? ""}
-            onChange={(e) => onSave({ transferAccountId: e.target.value || null })}
+            onChange={(e) =>
+              onSave({ transferAccountId: e.target.value || null })
+            }
             className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
           >
-            <option value="">{txn.amount < 0 ? "To which account?" : "From which account?"}</option>
+            <option value="">
+              {txn.amount < 0 ? "To which account?" : "From which account?"}
+            </option>
             {accounts
               .filter((a) => a.id !== txn.accountId)
               .map((a) => (
@@ -357,7 +525,12 @@ function TxnRow({
         {txn.beneficiary === "family_member" && (
           <select
             value={txn.beneficiaryUserId ?? ""}
-            onChange={(e) => onSave({ beneficiary: "family_member", beneficiaryUserId: e.target.value || null })}
+            onChange={(e) =>
+              onSave({
+                beneficiary: "family_member",
+                beneficiaryUserId: e.target.value || null,
+              })
+            }
             className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
           >
             <option value="">Which family member?</option>
@@ -373,7 +546,12 @@ function TxnRow({
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            onBlur={() => onSave({ beneficiary: "external", beneficiaryNote: note.trim() || null })}
+            onBlur={() =>
+              onSave({
+                beneficiary: "external",
+                beneficiaryNote: note.trim() || null,
+              })
+            }
             onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
             placeholder="e.g. gift for a friend"
             className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
@@ -386,7 +564,13 @@ function TxnRow({
 
 function RuleIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+    >
       <path
         d="M1.5 2.5H14.5L9.5 8.3V13L6.5 11.5V8.3L1.5 2.5Z"
         stroke="currentColor"
@@ -409,14 +593,22 @@ function CreateRuleForm({
   categories: CategoryDTO[];
   accounts: AccountDTO[];
   onCancel: () => void;
-  onCreate: (rule: CreateCategoryRuleInput, txnPatch: Record<string, unknown>) => void;
+  onCreate: (
+    rule: CreateCategoryRuleInput,
+    txnPatch: Record<string, unknown>,
+  ) => void;
 }) {
-  const [matchType, setMatchType] = useState<RuleMatchType>(txn.payee ? "payee_contains" : "account");
+  const [matchType, setMatchType] = useState<RuleMatchType>(
+    txn.payee ? "payee_contains" : "account",
+  );
   const [pattern, setPattern] = useState(txn.payee ?? "");
   const [categoryId, setCategoryId] = useState(txn.categoryId ?? "");
-  const [linkedAccountId, setLinkedAccountId] = useState(txn.transferAccountId ?? "");
+  const [linkedAccountId, setLinkedAccountId] = useState(
+    txn.transferAccountId ?? "",
+  );
 
-  const canCreate = !!categoryId && (matchType === "account" || pattern.trim().length > 0);
+  const canCreate =
+    !!categoryId && (matchType === "account" || pattern.trim().length > 0);
 
   const submit = () => {
     if (!canCreate) return;
@@ -428,13 +620,18 @@ function CreateRuleForm({
       linkedAccountId: linkedAccountId || undefined,
       priority: 10,
     };
-    const txnPatch: Record<string, unknown> = { categoryId, transferAccountId: linkedAccountId || null };
+    const txnPatch: Record<string, unknown> = {
+      categoryId,
+      transferAccountId: linkedAccountId || null,
+    };
     onCreate(rule, txnPatch);
   };
 
   return (
     <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-      <p className="text-xs font-semibold text-slate-600">Create an auto-tag rule from this transaction</p>
+      <p className="text-xs font-semibold text-slate-600">
+        Create an auto-tag rule from this transaction
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <select
           value={matchType}
@@ -443,7 +640,11 @@ function CreateRuleForm({
         >
           {RULE_MATCH_TYPES.map((t) => (
             <option key={t} value={t}>
-              {t === "account" ? `This account (${txn.accountName})` : t === "payee_contains" ? "Payee contains…" : "Description matches…"}
+              {t === "account"
+                ? `This account (${txn.accountName})`
+                : t === "payee_contains"
+                  ? "Payee contains…"
+                  : "Description matches…"}
             </option>
           ))}
         </select>

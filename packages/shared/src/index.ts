@@ -136,8 +136,22 @@ export interface TransactionDTO {
   transferAccountName: string | null;
 }
 
+// A suggested (not yet applied) transfer pairing with another transaction —
+// same magnitude, opposite sign, found in a different account. The user must
+// explicitly apply it; nothing here is ever auto-filled.
+export interface TransferSuggestionDTO {
+  candidateTransactionId: string;
+  accountId: string;
+  accountName: string;
+  confidence: number; // 0-100, based on how close the two dates are
+}
+
+export interface TransactionRowDTO extends TransactionDTO {
+  transferSuggestion?: TransferSuggestionDTO | null;
+}
+
 export interface TransactionListResponse {
-  items: TransactionDTO[];
+  items: TransactionRowDTO[];
   total: number;
 }
 
@@ -149,6 +163,11 @@ export const tagTransactionSchema = z.object({
   transferAccountId: z.string().nullable().optional(),
 });
 export type TagTransactionInput = z.infer<typeof tagTransactionSchema>;
+
+export const linkTransferSchema = z.object({
+  counterpartTransactionId: z.string().min(1),
+});
+export type LinkTransferInput = z.infer<typeof linkTransferSchema>;
 
 export interface NetWorthSummary {
   currency: string;
