@@ -152,6 +152,8 @@ model Account {
   snapshots      BalanceSnapshot[]
   access         AccountUser[]
   categoryRules  CategoryRule[]
+  linkedByRules  CategoryRule[]    @relation("RuleLinkedAccount")
+  transferTxns   Transaction[]     @relation("TxnTransferAccount")
 
   @@unique([institutionId, externalId])
   @@index([type])
@@ -207,6 +209,10 @@ model Transaction {
   beneficiaryUserId String?
   beneficiaryUser   User?     @relation("TxnBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: SetNull)
   beneficiaryNote   String?
+  // For transfer-kind transactions: the other account involved (e.g. the
+  // credit card a payment went to, or the account a payment came from).
+  transferAccountId String?
+  transferAccount   Account?   @relation("TxnTransferAccount", fields: [transferAccountId], references: [id], onDelete: SetNull)
   visibility  Visibility @default(shared)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
@@ -215,6 +221,7 @@ model Transaction {
   @@index([accountId, postedAt])
   @@index([categoryId])
   @@index([beneficiaryUserId])
+  @@index([transferAccountId])
 }
 
 enum CategoryKind {
@@ -258,10 +265,15 @@ model CategoryRule {
   matchAccount   Account?      @relation(fields: [matchAccountId], references: [id], onDelete: Cascade)
   pattern        String?
   priority       Int           @default(0)
+  // When set, matching transactions also get their transferAccountId auto-filled
+  // (e.g. a "Walmart Mastercard" payee rule auto-links to the Walmart card).
+  linkedAccountId String?
+  linkedAccount   Account?     @relation("RuleLinkedAccount", fields: [linkedAccountId], references: [id], onDelete: SetNull)
   createdAt      DateTime      @default(now())
 
   @@index([categoryId])
   @@index([matchAccountId])
+  @@index([linkedAccountId])
 }
 
 // Per-month budget (Phase 2). month = first day of the month.

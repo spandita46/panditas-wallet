@@ -3,6 +3,7 @@ import {
   createCategorySchema,
   createCategoryRuleSchema,
   updateCategorySchema,
+  updateCategoryRuleSchema,
   type CategoryDTO,
   type CategoryKind,
   type CategoryRuleDTO,
@@ -25,7 +26,13 @@ function toCategoryDTO(c: Category): CategoryDTO {
   };
 }
 
-function toRuleDTO(r: CategoryRule & { category: { name: string }; matchAccount: { name: string; label: string | null } | null }): CategoryRuleDTO {
+function toRuleDTO(
+  r: CategoryRule & {
+    category: { name: string };
+    matchAccount: { name: string; label: string | null } | null;
+    linkedAccount: { name: string; label: string | null } | null;
+  },
+): CategoryRuleDTO {
   return {
     id: r.id,
     categoryId: r.categoryId,
@@ -35,6 +42,8 @@ function toRuleDTO(r: CategoryRule & { category: { name: string }; matchAccount:
     matchAccountName: r.matchAccount ? (r.matchAccount.label ?? r.matchAccount.name) : null,
     pattern: r.pattern,
     priority: r.priority,
+    linkedAccountId: r.linkedAccountId,
+    linkedAccountName: r.linkedAccount ? (r.linkedAccount.label ?? r.linkedAccount.name) : null,
   };
 }
 
@@ -71,10 +80,16 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
 
   // Rules ---------------------------------------------------------------
 
+  const ruleInclude = {
+    category: { select: { name: true } },
+    matchAccount: { select: { name: true, label: true } },
+    linkedAccount: { select: { name: true, label: true } },
+  } as const;
+
   app.get("/rules", { preHandler: requireRole("admin", "adult") }, async () => {
     const rules = await prisma.categoryRule.findMany({
       orderBy: [{ priority: "desc" }, { id: "asc" }],
-      include: { category: { select: { name: true } }, matchAccount: { select: { name: true, label: true } } },
+      include: ruleInclude,
     });
     return rules.map(toRuleDTO);
   });
@@ -89,10 +104,21 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
         matchAccountId: parsed.data.matchType === "account" ? (parsed.data.matchAccountId ?? null) : null,
         pattern: parsed.data.matchType === "account" ? null : (parsed.data.pattern ?? null),
         priority: parsed.data.priority,
+        linkedAccountId: parsed.data.linkedAccountId ?? null,
       },
-      include: { category: { select: { name: true } }, matchAccount: { select: { name: true, label: true } } },
+      include: ruleInclude,
     });
     return reply.code(201).send(toRuleDTO(rule));
+  });
+
+  app.patch("/rules/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = updateCategoryRuleSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+    const existing = await prisma.categoryRule.findUnique({ where: { id } });
+    if (!existing) return reply.code(404).send({ error: "Rule not found" });
+    const rule = await prisma.categoryRule.update({ where: { id }, data: parsed.data, include: ruleInclude });
+    return toRuleDTO(rule);
   });
 
   app.delete("/rules/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {

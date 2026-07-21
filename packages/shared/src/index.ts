@@ -131,6 +131,9 @@ export interface TransactionDTO {
   beneficiaryUserId: string | null;
   beneficiaryName: string | null;
   beneficiaryNote: string | null;
+  // For transfer-kind transactions: the other account involved.
+  transferAccountId: string | null;
+  transferAccountName: string | null;
 }
 
 export interface TransactionListResponse {
@@ -143,6 +146,7 @@ export const tagTransactionSchema = z.object({
   beneficiary: z.enum(BENEFICIARIES).nullable().optional(),
   beneficiaryUserId: z.string().nullable().optional(),
   beneficiaryNote: z.string().max(200).nullable().optional(),
+  transferAccountId: z.string().nullable().optional(),
 });
 export type TagTransactionInput = z.infer<typeof tagTransactionSchema>;
 
@@ -217,6 +221,9 @@ export interface CategoryRuleDTO {
   matchAccountName: string | null;
   pattern: string | null;
   priority: number;
+  // When set, matching transactions get their transfer account auto-filled.
+  linkedAccountId: string | null;
+  linkedAccountName: string | null;
 }
 
 export const createCategoryRuleSchema = z
@@ -226,11 +233,18 @@ export const createCategoryRuleSchema = z
     matchAccountId: z.string().nullable().optional(),
     pattern: z.string().max(200).nullable().optional(),
     priority: z.number().int().default(0),
+    linkedAccountId: z.string().nullable().optional(),
   })
   .refine((r) => (r.matchType === "account" ? !!r.matchAccountId : !!r.pattern), {
     message: "Account rules need matchAccountId; text rules need a pattern",
   });
 export type CreateCategoryRuleInput = z.infer<typeof createCategoryRuleSchema>;
+
+export const updateCategoryRuleSchema = z.object({
+  linkedAccountId: z.string().nullable().optional(),
+  priority: z.number().int().optional(),
+});
+export type UpdateCategoryRuleInput = z.infer<typeof updateCategoryRuleSchema>;
 
 export interface BudgetLineDTO {
   categoryId: string;

@@ -17,6 +17,15 @@ const listQuerySchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}-01$/)
     .optional(),
+  // Arbitrary date range (inclusive), as an alternative to `month`.
+  from: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
+  to: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
   search: z.string().max(100).optional(),
   limit: z.coerce.number().min(1).max(200).default(50),
   offset: z.coerce.number().min(0).default(0),
@@ -26,6 +35,7 @@ const withRelations = {
   account: { select: { name: true, label: true } },
   category: { select: { name: true } },
   beneficiaryUser: { select: { name: true } },
+  transferAccount: { select: { name: true, label: true } },
 } as const;
 
 export async function transactionRoutes(app: FastifyInstance): Promise<void> {
@@ -33,11 +43,17 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
     const parsed = listQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid query" });
-    const { accountId, categoryId, untaggedCategory, beneficiary, untaggedBeneficiary, month, search, limit, offset } =
+    const { accountId, categoryId, untaggedCategory, beneficiary, untaggedBeneficiary, month, from, to, search, limit, offset } =
       parsed.data;
 
     let postedAt: Prisma.TransactionWhereInput["postedAt"];
-    if (month) {
+    if (from || to) {
+      // Custom range: `to` is inclusive of the whole day.
+      postedAt = {
+        ...(from && { gte: new Date(`${from}T00:00:00.000Z`) }),
+        ...(to && { lt: new Date(new Date(`${to}T00:00:00.000Z`).getTime() + 24 * 60 * 60 * 1000) }),
+      };
+    } else if (month) {
       const start = new Date(`${month}T00:00:00.000Z`);
       const end = new Date(start);
       end.setUTCMonth(end.getUTCMonth() + 1);

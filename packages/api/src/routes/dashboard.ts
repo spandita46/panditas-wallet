@@ -29,7 +29,11 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       where: { account: { isTracked: true, isClosed: false } },
       take: 15,
       orderBy: { postedAt: "desc" },
-      include: { account: { select: { name: true, label: true } }, category: { select: { name: true } } },
+      include: {
+        account: { select: { name: true, label: true } },
+        category: { select: { name: true } },
+        transferAccount: { select: { name: true, label: true } },
+      },
     });
 
     const institutions = await prisma.institution.findMany({

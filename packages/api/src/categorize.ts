@@ -7,6 +7,7 @@ interface Rule {
   matchAccountId: string | null;
   pattern: string | null;
   priority: number;
+  linkedAccountId: string | null;
 }
 
 interface TxnLike {
@@ -15,29 +16,41 @@ interface TxnLike {
   description: string | null;
 }
 
+interface MatchResult {
+  categoryId: string;
+  // Set when the matched rule auto-links a transfer counterpart account.
+  linkedAccountId: string | null;
+}
+
 /** Highest priority first; ties broken by rule id for stable ordering. */
 export async function loadRules(): Promise<Rule[]> {
   const rules = await prisma.categoryRule.findMany({ orderBy: [{ priority: "desc" }, { id: "asc" }] });
   return rules as Rule[];
 }
 
-export function matchCategory(txn: TxnLike, rules: Rule[]): string | null {
+export function matchCategory(txn: TxnLike, rules: Rule[]): MatchResult | null {
   for (const rule of rules) {
     if (rule.matchType === "account") {
-      if (rule.matchAccountId && rule.matchAccountId === txn.accountId) return rule.categoryId;
+      if (rule.matchAccountId && rule.matchAccountId === txn.accountId) {
+        return { categoryId: rule.categoryId, linkedAccountId: rule.linkedAccountId };
+      }
       continue;
     }
     if (rule.matchType === "payee_contains") {
       if (!rule.pattern) continue;
       const haystack = `${txn.payee ?? ""} ${txn.description ?? ""}`.toLowerCase();
-      if (haystack.includes(rule.pattern.toLowerCase())) return rule.categoryId;
+      if (haystack.includes(rule.pattern.toLowerCase())) {
+        return { categoryId: rule.categoryId, linkedAccountId: rule.linkedAccountId };
+      }
       continue;
     }
     if (rule.matchType === "description_regex") {
       if (!rule.pattern) continue;
       try {
         const re = new RegExp(rule.pattern, "i");
-        if (re.test(txn.description ?? "") || re.test(txn.payee ?? "")) return rule.categoryId;
+        if (re.test(txn.description ?? "") || re.test(txn.payee ?? "")) {
+          return { categoryId: rule.categoryId, linkedAccountId: rule.linkedAccountId };
+        }
       } catch {
         continue; // ignore an invalid regex rather than fail the whole categorize pass
       }
@@ -59,9 +72,15 @@ export async function categorizeNewTransactions(transactionIds: string[]): Promi
 
   let updated = 0;
   for (const txn of txns) {
-    const categoryId = matchCategory(txn, rules);
-    if (categoryId) {
-      await prisma.transaction.update({ where: { id: txn.id }, data: { categoryId } });
+    const match = matchCategory(txn, rules);
+    if (match) {
+      await prisma.transaction.update({
+        where: { id: txn.id },
+        data: {
+          categoryId: match.categoryId,
+          ...(match.linkedAccountId && { transferAccountId: match.linkedAccountId }),
+        },
+      });
       updated++;
     }
   }
@@ -80,9 +99,15 @@ export async function recategorizeAll(onlyUncategorized: boolean): Promise<numbe
 
   let updated = 0;
   for (const txn of txns) {
-    const categoryId = matchCategory(txn, rules);
-    if (categoryId) {
-      await prisma.transaction.update({ where: { id: txn.id }, data: { categoryId } });
+    const match = matchCategory(txn, rules);
+    if (match) {
+      await prisma.transaction.update({
+        where: { id: txn.id },
+        data: {
+          categoryId: match.categoryId,
+          ...(match.linkedAccountId && { transferAccountId: match.linkedAccountId }),
+        },
+      });
       updated++;
     }
   }

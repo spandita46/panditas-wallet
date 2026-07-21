@@ -36,6 +36,7 @@ export function toTransactionDTO(
     account: { name: string; label: string | null };
     category: { name: string } | null;
     beneficiaryUser?: { name: string } | null;
+    transferAccount?: { name: string; label: string | null } | null;
   },
 ): TransactionDTO {
   return {
@@ -53,5 +54,7 @@ export function toTransactionDTO(
     beneficiaryUserId: txn.beneficiaryUserId,
     beneficiaryName: txn.beneficiaryUser?.name ?? null,
     beneficiaryNote: txn.beneficiaryNote,
+    transferAccountId: txn.transferAccountId,
+    transferAccountName: txn.transferAccount ? (txn.transferAccount.label ?? txn.transferAccount.name) : null,
   };
 }

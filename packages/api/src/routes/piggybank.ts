@@ -28,6 +28,7 @@ const txnInclude = {
   account: { select: { name: true, label: true } },
   category: { select: { name: true } },
   beneficiaryUser: { select: { name: true } },
+  transferAccount: { select: { name: true, label: true } },
 } as const;
 
 export async function piggyBankRoutes(app: FastifyInstance): Promise<void> {

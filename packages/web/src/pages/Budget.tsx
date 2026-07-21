@@ -211,6 +211,54 @@ function BreakdownCard({ title, entries }: { title: string; entries: { key: stri
   );
 }
 
+function CategoryListItem({
+  category,
+  onGroupChange,
+  onToggleArchived,
+}: {
+  category: CategoryDTO;
+  onGroupChange: (group: string | null) => void;
+  onToggleArchived: () => void;
+}) {
+  const [group, setGroupValue] = useState(category.group ?? "");
+
+  const commit = () => {
+    const next = group.trim();
+    if (next !== (category.group ?? "")) onGroupChange(next || null);
+  };
+
+  return (
+    <div className={`flex items-center justify-between py-1 text-sm ${category.archived ? "opacity-50" : ""}`}>
+      <span className="flex items-center gap-2">
+        {category.name}
+        <input
+          value={group}
+          onChange={(e) => setGroupValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          list="category-groups"
+          placeholder="No group"
+          className="w-24 rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+        />
+        <span
+          className={`rounded px-1.5 py-0.5 text-xs ${
+            category.kind === "income"
+              ? "bg-green-100 text-green-700"
+              : category.kind === "transfer"
+                ? "bg-slate-200 text-slate-600"
+                : "bg-blue-50 text-blue-700"
+          }`}
+        >
+          {CATEGORY_KIND_LABELS[category.kind]}
+        </span>
+      </span>
+      <button onClick={onToggleArchived} className="text-xs text-slate-500 underline">
+        {category.archived ? "Unarchive" : "Archive"}
+      </button>
+    </div>
+  );
+}
+
 function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
   const queryClient = useQueryClient();
   const invalidate = () => {
@@ -236,10 +284,20 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
     mutationFn: (v: { id: string; archived: boolean }) => api.patch(`/categories/${v.id}`, { archived: v.archived }),
     onSuccess: invalidate,
   });
+  const setGroup = useMutation({
+    mutationFn: (v: { id: string; group: string | null }) => api.patch(`/categories/${v.id}`, { group: v.group }),
+    onSuccess: invalidate,
+  });
 
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.get<AccountDTO[]>("/accounts") });
   const rules = useQuery({ queryKey: ["category-rules"], queryFn: () => api.get<CategoryRuleDTO[]>("/categories/rules") });
-  const [ruleForm, setRuleForm] = useState({ categoryId: "", matchType: "account" as RuleMatchType, matchAccountId: "", pattern: "" });
+  const [ruleForm, setRuleForm] = useState({
+    categoryId: "",
+    matchType: "account" as RuleMatchType,
+    matchAccountId: "",
+    pattern: "",
+    linkedAccountId: "",
+  });
   const createRule = useMutation({
     mutationFn: () =>
       api.post("/categories/rules", {
@@ -247,9 +305,10 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
         matchType: ruleForm.matchType,
         matchAccountId: ruleForm.matchType === "account" ? ruleForm.matchAccountId : undefined,
         pattern: ruleForm.matchType !== "account" ? ruleForm.pattern : undefined,
+        linkedAccountId: ruleForm.linkedAccountId || undefined,
       }),
     onSuccess: () => {
-      setRuleForm({ categoryId: "", matchType: "account", matchAccountId: "", pattern: "" });
+      setRuleForm({ categoryId: "", matchType: "account", matchAccountId: "", pattern: "", linkedAccountId: "" });
       queryClient.invalidateQueries({ queryKey: ["category-rules"] });
     },
   });
@@ -257,42 +316,46 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
     mutationFn: (id: string) => api.del(`/categories/rules/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
   });
+  const setRuleLinkedAccount = useMutation({
+    mutationFn: (v: { id: string; linkedAccountId: string | null }) =>
+      api.patch(`/categories/rules/${v.id}`, { linkedAccountId: v.linkedAccountId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
+  });
+
+  const existingGroups = [...new Set(categories.map((c) => c.group).filter((g): g is string => !!g))].sort();
 
   return (
     <div className="mt-4 space-y-6">
       {/* Categories */}
       <div className="rounded-xl bg-white p-4 ring-1 ring-slate-200">
         <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Categories</h3>
+        <p className="mb-2 text-xs text-slate-500">
+          Click a category's group to change which section it appears under (e.g. "Essentials").
+        </p>
+        <datalist id="category-groups">
+          {existingGroups.map((g) => (
+            <option key={g} value={g} />
+          ))}
+        </datalist>
         <div className="space-y-1">
           {categories.map((c) => (
-            <div key={c.id} className={`flex items-center justify-between py-1 text-sm ${c.archived ? "opacity-50" : ""}`}>
-              <span className="flex items-center gap-2">
-                {c.name}
-                <span className="text-xs text-slate-400">{c.group}</span>
-                <span
-                  className={`rounded px-1.5 py-0.5 text-xs ${
-                    c.kind === "income"
-                      ? "bg-green-100 text-green-700"
-                      : c.kind === "transfer"
-                        ? "bg-slate-200 text-slate-600"
-                        : "bg-blue-50 text-blue-700"
-                  }`}
-                >
-                  {CATEGORY_KIND_LABELS[c.kind]}
-                </span>
-              </span>
-              <button
-                onClick={() => toggleArchived.mutate({ id: c.id, archived: !c.archived })}
-                className="text-xs text-slate-500 underline"
-              >
-                {c.archived ? "Unarchive" : "Archive"}
-              </button>
-            </div>
+            <CategoryListItem
+              key={c.id}
+              category={c}
+              onGroupChange={(group) => setGroup.mutate({ id: c.id, group })}
+              onToggleArchived={() => toggleArchived.mutate({ id: c.id, archived: !c.archived })}
+            />
           ))}
         </div>
         <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="New category name" className="input max-w-[10rem]" />
-          <input value={form.group} onChange={(e) => setForm({ ...form, group: e.target.value })} placeholder="Group (optional)" className="input max-w-[8rem]" />
+          <input
+            value={form.group}
+            onChange={(e) => setForm({ ...form, group: e.target.value })}
+            placeholder="Group (optional)"
+            list="category-groups"
+            className="input max-w-[8rem]"
+          />
           <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as CategoryKind })} className="input max-w-[8rem]">
             {CATEGORY_KINDS.map((k) => (
               <option key={k} value={k}>
@@ -325,13 +388,28 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
         </p>
         <div className="space-y-1">
           {rules.data?.map((r) => (
-            <div key={r.id} className="flex items-center justify-between py-1 text-sm">
+            <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-1 text-sm">
               <span>
                 {r.matchType === "account" ? r.matchAccountName : `"${r.pattern}"`} → <strong>{r.categoryName}</strong>
               </span>
-              <button onClick={() => deleteRule.mutate(r.id)} className="text-xs text-slate-500 underline">
-                Remove
-              </button>
+              <div className="flex items-center gap-2">
+                <select
+                  value={r.linkedAccountId ?? ""}
+                  onChange={(e) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: e.target.value || null })}
+                  title="Auto-link a transfer counterpart account"
+                  className="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                >
+                  <option value="">No linked account</option>
+                  {accounts.data?.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      links to {a.displayName}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={() => deleteRule.mutate(r.id)} className="text-xs text-slate-500 underline">
+                  Remove
+                </button>
+              </div>
             </div>
           ))}
           {rules.data?.length === 0 && <p className="text-sm text-slate-500">No rules yet.</p>}
@@ -377,6 +455,19 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
               className="input max-w-[12rem]"
             />
           )}
+          <select
+            value={ruleForm.linkedAccountId}
+            onChange={(e) => setRuleForm({ ...ruleForm, linkedAccountId: e.target.value })}
+            title="For transfers: auto-fill which account this links to"
+            className="input max-w-[12rem]"
+          >
+            <option value="">Links to account… (optional)</option>
+            {accounts.data?.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.displayName}
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => createRule.mutate()}
             disabled={
