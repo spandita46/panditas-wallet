@@ -121,10 +121,46 @@ async function upsertAccount(institutionId: string, a: NormalizedAccount): Promi
   }
 
   if (newTxnIds.length > 0) {
+    await reassignMisroutedRrspContributions(account.id, newTxnIds);
     await categorizeNewTransactions(newTxnIds);
   }
 
   return { accountId: account.id, added: toCreate.length };
+}
+
+// Sun Life's SimpleFIN feed lumps TFSA and RRSP contribution transactions
+// together under whichever of the two accounts it resolves first (observed:
+// always the TFSA). RRSP-bound rows are identifiable by fund name regardless
+// of which account they land in, so any landing on a "TFSA"-labeled Sun Life
+// account get moved to the sibling "RRSP" account at the same institution
+// before categorization runs. No-ops for every other institution/account.
+const RRSP_FUND_PAYEE_PATTERNS = ["Employer Contribution", "Retirement Units at Contribution Member"];
+
+async function reassignMisroutedRrspContributions(accountId: string, newTxnIds: string[]): Promise<void> {
+  const account = await prisma.account.findUnique({
+    where: { id: accountId },
+    include: { institution: true },
+  });
+  if (!account) return;
+  const isSunlifeTfsa =
+    /sun\s*life/i.test(account.institution?.name ?? "") && /tfsa/i.test(account.label ?? account.name);
+  if (!isSunlifeTfsa) return;
+
+  const rrspSibling = await prisma.account.findFirst({
+    where: {
+      institutionId: account.institutionId,
+      id: { not: account.id },
+      OR: [{ label: { contains: "RRSP", mode: "insensitive" } }, { name: { contains: "RRSP", mode: "insensitive" } }],
+    },
+  });
+  if (!rrspSibling) return;
+
+  for (const pattern of RRSP_FUND_PAYEE_PATTERNS) {
+    await prisma.transaction.updateMany({
+      where: { id: { in: newTxnIds }, payee: { contains: pattern } },
+      data: { accountId: rrspSibling.id },
+    });
+  }
 }
 
 // A bank domain can host multiple separate underlying connections — one per
