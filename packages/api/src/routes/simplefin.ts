@@ -69,6 +69,8 @@ export async function simplefinRoutes(app: FastifyInstance): Promise<void> {
         id: i.id,
         name: i.name,
         status: i.status,
+        statusMessage: i.statusMessage,
+        isNew: !i.newAcknowledgedAt,
         accountCount: i._count.accounts,
         lastSyncedAt: i.lastSyncedAt?.toISOString() ?? null,
       })),
@@ -87,6 +89,17 @@ export async function simplefinRoutes(app: FastifyInstance): Promise<void> {
   // Manual "Sync now".
   app.post("/sync", { preHandler: requireRole("admin", "adult") }, async () => {
     return syncAll();
+  });
+
+  // Dismiss the "New" badge on a freshly-discovered institution.
+  app.patch("/institutions/:id", { preHandler: requireRole("admin") }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = z.object({ acknowledgeNew: z.literal(true) }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+    const existing = await prisma.institution.findUnique({ where: { id } });
+    if (!existing) return reply.code(404).send({ error: "Institution not found" });
+    await prisma.institution.update({ where: { id }, data: { newAcknowledgedAt: new Date() } });
+    return reply.code(204).send();
   });
 
   app.delete("/connections/:id", { preHandler: requireRole("admin") }, async (request, reply) => {

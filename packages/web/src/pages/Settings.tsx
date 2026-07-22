@@ -1,13 +1,21 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ACCOUNT_TYPES, formatMoney, type AccountDTO, type AccountType } from "@panditas/shared";
+import { ACCOUNT_TYPES, formatMoney, SIMPLEFIN_BRIDGE_URL, type AccountDTO, type AccountType } from "@panditas/shared";
 import { api, ApiError } from "../api";
 import { Combobox } from "../components/ui/Combobox";
 
 interface SimplefinStatus {
   connections: { id: string; label: string | null; status: string; statusMessage: string | null; lastSyncedAt: string | null }[];
-  institutions: { id: string; name: string; status: string; accountCount: number; lastSyncedAt: string | null }[];
+  institutions: {
+    id: string;
+    name: string;
+    status: string;
+    statusMessage: string | null;
+    isNew: boolean;
+    accountCount: number;
+    lastSyncedAt: string | null;
+  }[];
   lastRun: { status: string; message: string | null; accountsUpdated: number; transactionsAdded: number; finishedAt: string | null } | null;
 }
 
@@ -89,6 +97,28 @@ export function SettingsPage() {
     onSuccess: invalidate,
   });
 
+  const acknowledgeAccount = useMutation({
+    mutationFn: (id: string) => api.patch(`/accounts/${id}`, { acknowledgeNew: true }),
+    onSuccess: invalidate,
+  });
+
+  const acknowledgeInstitution = useMutation({
+    mutationFn: (id: string) => api.patch(`/simplefin/institutions/${id}`, { acknowledgeNew: true }),
+    onSuccess: invalidate,
+  });
+
+  const mergeAccount = useMutation({
+    mutationFn: (v: { id: string; intoAccountId: string }) =>
+      api.post(`/accounts/${v.id}/merge`, { intoAccountId: v.intoAccountId }),
+    onSuccess: invalidate,
+    onError: (err) => setMessage(err instanceof ApiError ? err.message : "Merge failed"),
+  });
+
+  const unmergeAccount = useMutation({
+    mutationFn: (id: string) => api.post(`/accounts/${id}/unmerge`),
+    onSuccess: invalidate,
+  });
+
   return (
     <div className="space-y-10">
       <div>
@@ -143,13 +173,20 @@ export function SettingsPage() {
       <section>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Connections</h2>
-          <button
-            onClick={() => sync.mutate()}
-            disabled={sync.isPending}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-          >
-            {sync.isPending ? "Syncing…" : "Sync now"}
-          </button>
+          <div className="text-right">
+            <button
+              onClick={() => sync.mutate()}
+              disabled={sync.isPending}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+            >
+              {sync.isPending ? "Syncing…" : "Sync now"}
+            </button>
+            {status.data?.lastRun?.finishedAt && (
+              <p className="mt-1 text-xs text-slate-500">
+                Last synced {new Date(status.data.lastRun.finishedAt).toLocaleString("en-CA")}
+              </p>
+            )}
+          </div>
         </div>
         <div className="card">
           {status.data?.institutions.length === 0 && (
@@ -158,21 +195,42 @@ export function SettingsPage() {
           {status.data?.institutions.map((i) => (
             <div key={i.id} className="flex items-center justify-between border-b border-slate-100 bg-white p-3 text-sm last:border-0">
               <div>
-                <p className="font-medium text-slate-800">{i.name}</p>
+                <p className="font-medium text-slate-800">
+                  {i.name}
+                  {i.isNew && <span className="ml-2 rounded bg-accent-100 px-1.5 py-0.5 text-xs text-accent-700">New</span>}
+                </p>
                 <p className="text-xs text-slate-500">
                   {i.accountCount} account(s) ·{" "}
                   {i.lastSyncedAt ? `synced ${new Date(i.lastSyncedAt).toLocaleString("en-CA")}` : "never synced"}
                 </p>
+                {i.status !== "ok" && i.statusMessage && (
+                  <p className="mt-0.5 text-xs text-liability-700">{i.statusMessage}</p>
+                )}
               </div>
-              <StatusBadge status={i.status} />
+              <div className="flex items-center gap-2">
+                {i.isNew && (
+                  <button
+                    onClick={() => acknowledgeInstitution.mutate(i.id)}
+                    className="text-xs text-accent-600 hover:underline"
+                  >
+                    Got it
+                  </button>
+                )}
+                {i.status !== "ok" && (
+                  <a
+                    href={SIMPLEFIN_BRIDGE_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-accent-600 hover:underline"
+                  >
+                    Reconnect ↗
+                  </a>
+                )}
+                <StatusBadge status={i.status} />
+              </div>
             </div>
           ))}
         </div>
-        {status.data?.connections.some((c) => c.statusMessage) && (
-          <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-            {status.data.connections.filter((c) => c.statusMessage).map((c) => c.statusMessage).join(" · ")}
-          </div>
-        )}
       </section>
 
       {/* Account type editor */}
@@ -180,19 +238,24 @@ export function SettingsPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Accounts</h2>
         <p className="mb-3 text-sm text-slate-600">
           Sync guesses each account's type — correct any that are wrong (it affects net-worth math).
-          Untick <strong>Track</strong> to exclude an account (e.g. a duplicate or unused one) from
-          net worth and all lists.
+          If a SimpleFIN reconnect ever creates a duplicate account (same real bank account, new id),
+          <strong> Merge</strong> it into the live one — history is kept and net worth stops double-counting.
+          Untick <strong>Track</strong> for the general case of an unwanted duplicate or unused account.
         </p>
         <div className="card">
           {accounts.data?.map((a) => (
             <AccountRow
               key={a.id}
               account={a}
+              allAccounts={accounts.data ?? []}
               users={users.data ?? []}
               onLabel={(label) => setLabel.mutate({ id: a.id, label })}
               onType={(type) => setType.mutate({ id: a.id, type })}
               onTracked={(isTracked) => setTracked.mutate({ id: a.id, isTracked })}
               onOwner={(ownerUserId) => setOwner.mutate({ id: a.id, ownerUserId })}
+              onAcknowledgeNew={() => acknowledgeAccount.mutate(a.id)}
+              onMerge={(intoAccountId) => mergeAccount.mutate({ id: a.id, intoAccountId })}
+              onUnmerge={() => unmergeAccount.mutate(a.id)}
             />
           ))}
         </div>
@@ -203,33 +266,48 @@ export function SettingsPage() {
 
 function AccountRow({
   account,
+  allAccounts,
   users,
   onLabel,
   onType,
   onTracked,
   onOwner,
+  onAcknowledgeNew,
+  onMerge,
+  onUnmerge,
 }: {
   account: AccountDTO;
+  allAccounts: AccountDTO[];
   users: { id: string; name: string; role: string }[];
   onLabel: (label: string | null) => void;
   onType: (type: AccountType) => void;
   onTracked: (isTracked: boolean) => void;
   onOwner: (ownerUserId: string | null) => void;
+  onAcknowledgeNew: () => void;
+  onMerge: (intoAccountId: string) => void;
+  onUnmerge: () => void;
 }) {
   const [label, setLabelValue] = useState(account.label ?? "");
+  const [mergeTarget, setMergeTarget] = useState("");
 
   const commitLabel = () => {
     const next = label.trim() || null;
     if (next !== account.label) onLabel(next);
   };
 
+  const mergeCandidates = allAccounts.filter(
+    (a) => a.id !== account.id && a.institutionId && a.institutionId === account.institutionId && !a.mergedIntoId,
+  );
+
+  const merged = Boolean(account.mergedIntoId);
+
   return (
     <div
-      className={`flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 bg-white p-3 text-sm last:border-0 ${
+      className={`grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem_9rem_8rem_10rem_5rem] items-center gap-3 border-b border-slate-100 bg-white p-3 text-sm last:border-0 ${
         account.isTracked ? "" : "opacity-60"
       }`}
     >
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0">
         <input
           value={label}
           onChange={(e) => setLabelValue(e.target.value)}
@@ -241,12 +319,31 @@ function AccountRow({
         <p className="mt-1 truncate text-xs text-slate-500">
           {account.institutionName ?? "Manual"} · {account.name} ·{" "}
           {formatMoney(account.currentBalance, account.currency)}
-          {!account.isTracked && (
+          {account.isNew && (
+            <span className="ml-2 rounded bg-accent-100 px-1.5 py-0.5 text-accent-700">New</span>
+          )}
+          {!account.isTracked && !merged && (
             <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-slate-600">Not tracked</span>
+          )}
+          {merged && (
+            <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-slate-600">
+              Merged into {account.mergedIntoName}
+            </span>
           )}
         </p>
       </div>
-      <div className="flex items-center gap-3">
+
+      {account.isNew ? (
+        <button onClick={onAcknowledgeNew} className="justify-self-start text-xs text-accent-600 hover:underline">
+          Got it
+        </button>
+      ) : (
+        <div />
+      )}
+
+      {merged ? (
+        <div />
+      ) : (
         <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
           <input
             type="checkbox"
@@ -256,6 +353,11 @@ function AccountRow({
           />
           Track
         </label>
+      )}
+
+      {merged ? (
+        <div />
+      ) : (
         <Combobox
           options={[{ value: "", label: "Shared" }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
           value={account.ownerUserId ?? ""}
@@ -264,10 +366,15 @@ function AccountRow({
           className="w-36"
           inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-sm"
         />
+      )}
+
+      {merged ? (
+        <div />
+      ) : (
         <select
           value={account.type}
           onChange={(e) => onType(e.target.value as AccountType)}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
+          className="w-32 rounded-lg border border-slate-300 px-2 py-1 text-sm"
         >
           {ACCOUNT_TYPES.map((t) => (
             <option key={t} value={t}>
@@ -275,7 +382,40 @@ function AccountRow({
             </option>
           ))}
         </select>
-      </div>
+      )}
+
+      {!merged && mergeCandidates.length > 0 ? (
+        <Combobox
+          options={mergeCandidates.map((a) => ({ value: a.id, label: a.displayName }))}
+          value={mergeTarget}
+          onChange={setMergeTarget}
+          placeholder="Merge into…"
+          title="Merge this account into another (same institution) — e.g. after a SimpleFIN reconnect"
+          className="w-40"
+          inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-sm"
+        />
+      ) : (
+        <div />
+      )}
+
+      {merged ? (
+        <button
+          onClick={onUnmerge}
+          className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+        >
+          Unmerge
+        </button>
+      ) : mergeCandidates.length > 0 ? (
+        <button
+          onClick={() => mergeTarget && onMerge(mergeTarget)}
+          disabled={!mergeTarget}
+          className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+        >
+          Merge
+        </button>
+      ) : (
+        <div />
+      )}
     </div>
   );
 }

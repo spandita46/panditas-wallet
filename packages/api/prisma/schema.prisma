@@ -91,16 +91,35 @@ model Institution {
   externalId String?
   status     InstitutionStatus   @default(never_synced)
   statusMessage String?
+  // SimpleFIN's conn_id for this institution's connection — durable secondary
+  // lookup key, distinct from externalId (the org key derived from
+  // org.domain/url, which is only known once an account has come through).
+  // Lets a broken institution that returns zero accounts still be found.
+  connId     String?
   connectionId String?
   connection   SimplefinConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
   lastSyncedAt DateTime?
   createdAt  DateTime            @default(now())
   updatedAt  DateTime            @updatedAt
+  // Null = unacknowledged "new". Pre-existing rows backfilled to createdAt.
+  newAcknowledgedAt DateTime?
 
   accounts  Account[]
   syncRuns  SyncRun[]
 
   @@unique([provider, externalId])
+  @@index([connId])
+}
+
+// One row per syncAll() run (not per-connection) — a stable household-wide
+// baseline for the assets/liabilities swing-detection alert.
+model NetWorthCheckpoint {
+  id               String   @id @default(cuid())
+  assetsTotal      Decimal  @db.Decimal(14, 2)
+  liabilitiesTotal Decimal  @db.Decimal(14, 2)
+  computedAt       DateTime @default(now())
+
+  @@index([computedAt])
 }
 
 enum AccountType {
@@ -146,6 +165,18 @@ model Account {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
+  // Merge: this account is the same real-world entity as `mergedInto`.
+  // Shallow star topology only — merge INTO a root (mergedIntoId: null)
+  // account, never into an already-merged leaf, so a merge group is always
+  // exactly one level deep (no recursive lookup ever needed).
+  mergedIntoId      String?
+  mergedInto        Account?  @relation("AccountMerge", fields: [mergedIntoId], references: [id], onDelete: SetNull)
+  mergedFrom        Account[] @relation("AccountMerge")
+  // Null = unacknowledged "new" (shows a New badge until dismissed). Sync
+  // never sets this on create, so a freshly discovered account defaults to
+  // null. Pre-existing rows are backfilled to createdAt in the migration.
+  newAcknowledgedAt DateTime?
+
   transactions   Transaction[]
   contributions  Contribution[]
   goals          Goal[]
@@ -157,6 +188,7 @@ model Account {
 
   @@unique([institutionId, externalId])
   @@index([type])
+  @@index([mergedIntoId])
 }
 
 // Explicit user<->account association (assigned by admin). Enables per-adult

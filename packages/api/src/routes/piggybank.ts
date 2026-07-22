@@ -50,7 +50,10 @@ export async function piggyBankRoutes(app: FastifyInstance): Promise<void> {
         where: { accountId: account.id },
         orderBy: { capturedAt: "asc" },
       }),
-      prisma.account.findUnique({ where: { id: account.id }, include: { institution: true } }),
+      prisma.account.findUnique({
+        where: { id: account.id },
+        include: { institution: true, mergedInto: { select: { name: true, label: true } } },
+      }),
     ]);
 
     const data: PiggyBankData = {

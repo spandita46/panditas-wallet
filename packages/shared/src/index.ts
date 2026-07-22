@@ -35,6 +35,11 @@ export const BENEFICIARY_LABELS: Record<Beneficiary, string> = {
 export const LIABILITY_TYPES: AccountType[] = ["credit_card", "loan"];
 export const isLiability = (t: AccountType) => LIABILITY_TYPES.includes(t);
 
+// SimpleFIN Bridge's own dashboard, where broken institution connections are
+// actually re-authenticated (this app can only detect and notify — the
+// bank-login/2FA step itself happens on SimpleFIN's side).
+export const SIMPLEFIN_BRIDGE_URL = "https://beta-bridge.simplefin.org/";
+
 // ----------------------------------------------------------------------------
 // Auth
 // ----------------------------------------------------------------------------
@@ -104,6 +109,7 @@ export interface AccountDTO {
   label: string | null;
   displayName: string; // label ?? name
   type: AccountType;
+  institutionId: string | null;
   institutionName: string | null;
   currency: string;
   currentBalance: number;
@@ -114,6 +120,17 @@ export interface AccountDTO {
   isTracked: boolean;
   ownerUserId: string | null;
   lastSyncedAt: string | null;
+  createdAt: string;
+  // True until the user acknowledges a freshly-discovered account (e.g. from
+  // a SimpleFIN reconnect) — a deliberate, persisted acknowledgment, not a
+  // self-expiring "created recently" window.
+  isNew: boolean;
+  // Set once this account has been merged into another (same real-world
+  // account, e.g. after a SimpleFIN reconnect produced a duplicate). A merged
+  // account is automatically untracked; its history is retained and folded
+  // into the target account's filters/balance-history, not deleted.
+  mergedIntoId: string | null;
+  mergedIntoName: string | null;
 }
 
 export interface TransactionDTO {
@@ -182,7 +199,28 @@ export interface DashboardSummary {
   creditCards: AccountDTO[];
   recentTransactions: TransactionDTO[];
   accountsByType: Record<AccountType, AccountDTO[]>;
-  staleInstitutions: { id: string; name: string; status: string; lastSyncedAt: string | null }[];
+  // When the last full SimpleFIN sync run (cron or manual) finished — shown
+  // near "Sync now" so it's obvious whether re-syncing is worth it (avoids
+  // burning SimpleFIN calls needlessly) and gives a future auto-sync cron a
+  // visible "last ran at" signal.
+  lastSyncFinishedAt: string | null;
+  staleInstitutions: {
+    id: string;
+    name: string;
+    status: string;
+    statusMessage: string | null;
+    lastSyncedAt: string | null;
+  }[];
+  newAccounts: { id: string; name: string; institutionName: string }[];
+  newInstitutions: { id: string; name: string }[];
+  // Still tracked, but its institution synced fine while this account wasn't
+  // touched — a strong signal it may be a duplicate needing a merge (the
+  // mirror image of a "new account" appearing under the same institution).
+  orphanedAccounts: { id: string; name: string; institutionId: string }[];
+  // Populated only when the swing since the previous sync run exceeds the
+  // alert threshold (currently 10%) — null otherwise, so the frontend can
+  // just check truthiness rather than re-deriving the threshold itself.
+  netWorthSwing: { assetsPctChange: number | null; liabilitiesPctChange: number | null } | null;
 }
 
 // ----------------------------------------------------------------------------
@@ -323,6 +361,14 @@ export interface PiggyBankData {
   account: AccountDTO;
   transactions: TransactionDTO[];
   history: PiggyPoint[];
+}
+
+// A single account's balance-over-time series (from BalanceSnapshot, captured
+// on every sync and manual balance edit) — used to drill down from the
+// Dashboard's Assets/Liabilities composition donuts to one account's history.
+export interface AccountBalancePoint {
+  date: string;
+  balance: number;
 }
 
 // ----------------------------------------------------------------------------

@@ -17,6 +17,7 @@ export interface NormalizedAccount {
   name: string;
   orgKey: string; // stable institution key (domain/org id/conn id)
   orgName: string;
+  connId: string | null;
   currency: string;
   balance: string;
   availableBalance: string | null;
@@ -24,9 +25,67 @@ export interface NormalizedAccount {
   transactions: NormalizedTxn[];
 }
 
+// A per-institution error from SimpleFIN's `errlist`, with the conn_id/account_id
+// attribution the flattened `errors: string[]` throws away.
+export interface NormalizedError {
+  code?: string;
+  msg: string;
+  connId?: string;
+  accountId?: string;
+}
+
+// An entry from SimpleFIN's `connections` array — present even for a
+// connection that returned zero accounts this sync (unlike NormalizedAccount,
+// which only exists for orgs with at least one account in the response).
+export interface NormalizedConnection {
+  connId: string;
+  name?: string;
+  orgId?: string;
+}
+
 export interface AccountsResult {
   accounts: NormalizedAccount[];
   errors: string[];
+  errlist: NormalizedError[];
+  connections: NormalizedConnection[];
+}
+
+// SimpleFIN's benign date-range advisories share the same `errors`/`errlist`
+// array as real per-institution problems (auth required, etc.) — filter these
+// out wherever institution/connection health is being judged.
+export function isAdvisoryError(msg: string): boolean {
+  return /recommended range|exceeds limit|was capped|date range/i.test(msg);
+}
+
+/** Best-effort classification of a SimpleFIN error into a broad institution
+ * status. SimpleFIN's `code` taxonomy isn't documented anywhere we have access
+ * to — this is a message-text heuristic, tightened against real observed
+ * messages ("...Auth required", "...Broken. Please click \"Adjust.\""). */
+export function classifySimplefinError(e: { code?: string; msg: string }): "auth_required" | "error" {
+  if (
+    /reconnect|re-?auth|expired|credential|login|log in|password|mfa|2fa|verify|challenge|\bauth\b|broken|adjust/i.test(
+      e.msg,
+    )
+  ) {
+    return "auth_required";
+  }
+  return "error";
+}
+
+// The real, currently-observed SimpleFIN Bridge shape has no `errlist`/
+// `connections` at all — every per-institution problem instead arrives as a
+// plain string in `errors`, of the form "Connection to {name} may need
+// attention. {reason}". This is the PRIMARY attribution path in practice, not
+// a fallback — the structured errlist/connId path above may simply never
+// fire against this Bridge instance.
+const LEGACY_INSTITUTION_ERROR = /^connection to (.+?) may need attention\.?\s*(.*)$/i;
+
+export function parseLegacyInstitutionError(msg: string): { name: string; reason: string } | null {
+  const m = LEGACY_INSTITUTION_ERROR.exec(msg.trim());
+  if (!m) return null;
+  const name = m[1]!.trim();
+  const reason = (m[2] || "").trim() || msg.trim();
+  return { name, reason };
 }
 
 const toDate = (v: unknown): Date | null => {
@@ -98,6 +157,7 @@ export async function fetchAccounts(
       name: a.name ?? "Account",
       orgKey,
       orgName,
+      connId: a.conn_id ?? null,
       currency: normalizeCurrency(a.currency),
       balance: a.balance ?? "0",
       availableBalance: a["available-balance"] ?? null,
@@ -118,7 +178,17 @@ export async function fetchAccounts(
   for (const e of data.errors ?? []) if (typeof e === "string") errors.push(e);
   for (const e of data.errlist ?? []) if (e?.msg) errors.push(e.msg);
 
-  return { accounts, errors };
+  const errlist: NormalizedError[] = (data.errlist ?? [])
+    .filter((e): e is { code?: string; msg: string; conn_id?: string; account_id?: string } => Boolean(e?.msg))
+    .map((e) => ({ code: e.code, msg: e.msg, connId: e.conn_id, accountId: e.account_id }));
+
+  const connections: NormalizedConnection[] = (data.connections ?? []).map((c) => ({
+    connId: c.conn_id,
+    name: c.name,
+    orgId: c.org_id,
+  }));
+
+  return { accounts, errors, errlist, connections };
 }
 
 function normalizeCurrency(c: string | undefined): string {

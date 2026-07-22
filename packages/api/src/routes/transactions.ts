@@ -203,9 +203,21 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     // instead of one clobbering the other's key.
     const categoryIdList = categoryIds ? categoryIds.split(",").filter(Boolean) : undefined;
 
+    // Filtering by a specific account also pulls in any account merged into
+    // it (e.g. the old account from a SimpleFIN reconnect) — a merged-away
+    // account is deliberately isTracked:false, so it must bypass the generic
+    // tracked/open filter below rather than be silently excluded by it.
+    const accountIdList = accountId
+      ? [
+          accountId,
+          ...(await prisma.account.findMany({ where: { mergedIntoId: accountId }, select: { id: true } })).map(
+            (a) => a.id,
+          ),
+        ]
+      : undefined;
+
     const where: Prisma.TransactionWhereInput = {
-      account: { isTracked: true, isClosed: false },
-      ...(accountId && { accountId }),
+      ...(accountIdList ? { accountId: { in: accountIdList } } : { account: { isTracked: true, isClosed: false } }),
       ...(categoryIdList
         ? { categoryId: { in: categoryIdList } }
         : categoryId

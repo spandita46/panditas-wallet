@@ -10,7 +10,10 @@ import {
 const num = (d: Prisma.Decimal | null): number | null => (d === null ? null : Number(d));
 
 export function toAccountDTO(
-  account: Account & { institution: Institution | null },
+  account: Account & {
+    institution: Institution | null;
+    mergedInto?: { name: string; label: string | null } | null;
+  },
 ): AccountDTO {
   return {
     id: account.id,
@@ -18,6 +21,7 @@ export function toAccountDTO(
     label: account.label,
     displayName: account.label ?? account.name,
     type: account.type as AccountType,
+    institutionId: account.institutionId,
     institutionName: account.institution?.name ?? null,
     currency: account.currency,
     currentBalance: Number(account.currentBalance),
@@ -28,6 +32,10 @@ export function toAccountDTO(
     isTracked: account.isTracked,
     ownerUserId: account.ownerUserId,
     lastSyncedAt: account.lastSyncedAt?.toISOString() ?? null,
+    createdAt: account.createdAt.toISOString(),
+    isNew: !account.newAcknowledgedAt,
+    mergedIntoId: account.mergedIntoId,
+    mergedIntoName: account.mergedInto ? (account.mergedInto.label ?? account.mergedInto.name) : null,
   };
 }
 

@@ -24,6 +24,19 @@ const envSchema = z.object({
     .optional()
     .transform((v) => v === "true" || v === "1"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+
+  // Optional email notifications when a SimpleFIN institution/connection breaks.
+  // Left unset, notifications are skipped (logged, not fatal) — email is not a
+  // hard requirement for sync to keep working.
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  // Defaults to the seeded admin's email when unset.
+  NOTIFY_EMAIL_TO: z.string().optional(),
+  // Used only to build a link back to the app in notification emails.
+  APP_URL: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);
