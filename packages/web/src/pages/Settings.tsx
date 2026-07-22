@@ -124,6 +124,12 @@ export function SettingsPage() {
     onSuccess: invalidate,
   });
 
+  const setSuppressTransactionSync = useMutation({
+    mutationFn: (v: { id: string; suppressTransactionSync: boolean }) =>
+      api.patch(`/accounts/${v.id}`, { suppressTransactionSync: v.suppressTransactionSync }),
+    onSuccess: invalidate,
+  });
+
   const acknowledgeAccount = useMutation({
     mutationFn: (id: string) => api.patch(`/accounts/${id}`, { acknowledgeNew: true }),
     onSuccess: invalidate,
@@ -337,6 +343,7 @@ export function SettingsPage() {
               onMerge={(intoAccountId) => mergeAccount.mutate({ id: a.id, intoAccountId })}
               onUnmerge={() => unmergeAccount.mutate(a.id)}
               onBillDates={(v) => setBillDates.mutate({ id: a.id, ...v })}
+              onSuppressTransactionSync={(v) => setSuppressTransactionSync.mutate({ id: a.id, suppressTransactionSync: v })}
             />
           ))}
         </div>
@@ -357,6 +364,7 @@ function AccountRow({
   onMerge,
   onUnmerge,
   onBillDates,
+  onSuppressTransactionSync,
 }: {
   account: AccountDTO;
   allAccounts: AccountDTO[];
@@ -369,6 +377,7 @@ function AccountRow({
   onMerge: (intoAccountId: string) => void;
   onUnmerge: () => void;
   onBillDates: (v: { statementDay: number | null; dueDay: number | null }) => void;
+  onSuppressTransactionSync: (v: boolean) => void;
 }) {
   const [label, setLabelValue] = useState(account.label ?? "");
   const [mergeTarget, setMergeTarget] = useState("");
@@ -529,6 +538,17 @@ function AccountRow({
                 </button>
               </>
             )}
+            <label
+              className="flex items-center gap-1.5 text-xs text-slate-500"
+              title="Keep syncing this account's balance, but stop pulling in its transactions — for a feed that keeps sending duplicate/wrong transactions here"
+            >
+              <input
+                type="checkbox"
+                checked={account.suppressTransactionSync}
+                onChange={(e) => onSuppressTransactionSync(e.target.checked)}
+              />
+              Don't sync transactions
+            </label>
           </>
         )}
       </div>

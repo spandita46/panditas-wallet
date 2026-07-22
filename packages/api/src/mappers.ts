@@ -47,6 +47,7 @@ export function toAccountDTO(
     estimatedBalance: Number(account.currentBalance) + pendingTotal,
     statementDay: account.statementDay,
     dueDay: account.dueDay,
+    suppressTransactionSync: account.suppressTransactionSync,
   };
 }
 

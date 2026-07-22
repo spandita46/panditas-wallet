@@ -45,8 +45,14 @@ function categoryPickOptions(categories: CategoryDTO[], placeholder: string): Co
     ),
   ];
 }
+// Excludes merged accounts — a merged-away account is retired (its history
+// already surfaces through the account it was merged into), so it's never a
+// meaningful target for a new rule, transfer link, or budget setting.
 function accountOptions(accounts: AccountDTO[], placeholder: string): ComboboxItem[] {
-  return [{ value: "", label: placeholder }, ...accounts.map((a) => ({ value: a.id, label: a.displayName }))];
+  return [
+    { value: "", label: placeholder },
+    ...accounts.filter((a) => !a.mergedIntoId).map((a) => ({ value: a.id, label: a.displayName })),
+  ];
 }
 
 // ---- Rule condition builder --------------------------------------------
@@ -392,33 +398,31 @@ function BeneficiarySelect({
   onChange,
   family,
   className,
+  inputClassName,
 }: {
   value: string;
   onChange: (beneficiary: Beneficiary | null, beneficiaryUserId: string | null) => void;
   family: FamilyMemberDTO[];
   className?: string;
+  inputClassName?: string;
 }) {
+  const options: ComboboxItem[] = [
+    { value: "", label: "No default" },
+    ...BENEFICIARIES.filter((b) => b !== "family_member").map((b) => ({ value: b, label: BENEFICIARY_LABELS[b] })),
+    ...family.map((f) => ({ value: `family_member:${f.id}`, label: f.name })),
+  ];
   return (
-    <select
+    <Combobox
+      options={options}
       value={value}
-      onChange={(e) => {
-        const { beneficiary, beneficiaryUserId } = decodeBeneficiary(e.target.value);
+      onChange={(v) => {
+        const { beneficiary, beneficiaryUserId } = decodeBeneficiary(v);
         onChange(beneficiary, beneficiaryUserId);
       }}
+      title="Default beneficiary"
       className={className}
-    >
-      <option value="">No default</option>
-      {BENEFICIARIES.filter((b) => b !== "family_member").map((b) => (
-        <option key={b} value={b}>
-          {BENEFICIARY_LABELS[b]}
-        </option>
-      ))}
-      {family.map((f) => (
-        <option key={f.id} value={`family_member:${f.id}`}>
-          {f.name}
-        </option>
-      ))}
-    </select>
+      inputClassName={inputClassName}
+    />
   );
 }
 
@@ -470,7 +474,8 @@ function CategoryListItem({
           value={encodeBeneficiary(category.defaultBeneficiary, category.defaultBeneficiaryUserId)}
           onChange={onDefaultBeneficiary}
           family={family}
-          className="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+          className="w-32"
+          inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
         />
       </span>
       <button onClick={onToggleArchived} className="text-xs text-slate-500 underline">
@@ -631,7 +636,8 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
                         value={encodeBeneficiary(r.beneficiary, r.beneficiaryUserId)}
                         onChange={(beneficiary, beneficiaryUserId) => setRuleBeneficiary.mutate({ id: r.id, beneficiary, beneficiaryUserId })}
                         family={family.data ?? []}
-                        className="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                        className="w-32"
+                        inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
                       />
                       <Combobox
                         options={accountOptions(accounts.data ?? [], "No linked account")}
@@ -678,7 +684,7 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
                 setRuleForm({ ...ruleForm, beneficiary, beneficiaryUserId: beneficiaryUserId ?? "" })
               }
               family={family.data ?? []}
-              className="input max-w-[10rem]"
+              className="max-w-[10rem]"
             />
             <Combobox
               options={accountOptions(accounts.data ?? [], "Links to account… (optional)")}

@@ -41,6 +41,9 @@ const listQuerySchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
   search: z.string().max(100).optional(),
+  // Off by default — untracked accounts (exploratory/should-be-closed ones)
+  // stay out of the day-to-day view unless explicitly asked for.
+  includeUntracked: z.coerce.boolean().optional(),
   // Dollar amount filter, as an absolute value — matches both expenses and
   // income/refunds of that magnitude regardless of sign.
   minAmount: z.coerce.number().nonnegative().optional(),
@@ -183,6 +186,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       from,
       to,
       search,
+      includeUntracked,
       minAmount,
       maxAmount,
       limit,
@@ -222,7 +226,9 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       : undefined;
 
     const where: Prisma.TransactionWhereInput = {
-      ...(accountIdList ? { accountId: { in: accountIdList } } : { account: { isTracked: true, isClosed: false } }),
+      ...(accountIdList
+        ? { accountId: { in: accountIdList } }
+        : { account: { isClosed: false, ...(includeUntracked ? {} : { isTracked: true }) } }),
       ...(categoryIdList
         ? { categoryId: { in: categoryIdList } }
         : categoryId

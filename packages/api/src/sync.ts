@@ -71,6 +71,13 @@ async function upsertAccount(institutionId: string, a: NormalizedAccount): Promi
     data: { accountId: account.id, balance: a.balance, capturedAt: a.balanceDate ?? new Date() },
   });
 
+  // Balance/snapshot above stays authoritative either way — this only skips
+  // ingesting this account's transaction feed (see schema comment on
+  // suppressTransactionSync for why an account would need this).
+  if (account.suppressTransactionSync) {
+    return { accountId: account.id, added: 0 };
+  }
+
   // Insert new transactions; refresh any that were pending and may now be posted.
   const existing = await prisma.transaction.findMany({
     where: { accountId: account.id, externalId: { in: a.transactions.map((t) => t.id) } },

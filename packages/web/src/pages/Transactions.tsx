@@ -34,10 +34,13 @@ function categoryOptgroups(categories: CategoryDTO[]) {
 
 // Combobox option builders — accounts/family are flat lists, categories stay
 // grouped by kind (in the same expense/income/transfer order as above).
+// Excludes merged accounts — a merged-away account is retired (its history
+// already surfaces through the account it was merged into), so it's never a
+// meaningful target for filtering, a new transaction, or a transfer link.
 function accountOptions(accounts: AccountDTO[], placeholder: string, excludeId?: string): ComboboxItem[] {
   return [
     { value: "", label: placeholder },
-    ...accounts.filter((a) => a.id !== excludeId).map((a) => ({ value: a.id, label: a.displayName })),
+    ...accounts.filter((a) => a.id !== excludeId && !a.mergedIntoId).map((a) => ({ value: a.id, label: a.displayName })),
   ];
 }
 function categoryPickOptions(categories: CategoryDTO[], placeholder: string, extra: ComboboxItem[] = []): ComboboxItem[] {
@@ -90,6 +93,7 @@ export function TransactionsPage() {
   const [toDate, setToDate] = useState(() => searchParams.get("to") ?? "");
   const [minAmount, setMinAmount] = useState("");
   const [maxAmount, setMaxAmount] = useState("");
+  const [includeUntracked, setIncludeUntracked] = useState(false);
   const [page, setPage] = useState(0);
   const [ruleMessage, setRuleMessage] = useState<string | null>(null);
   const [showAddTxn, setShowAddTxn] = useState(false);
@@ -124,6 +128,7 @@ export function TransactionsPage() {
   }
   if (minAmount.trim()) params.set("minAmount", minAmount.trim());
   if (maxAmount.trim()) params.set("maxAmount", maxAmount.trim());
+  if (includeUntracked) params.set("includeUntracked", "1");
   params.set("limit", String(PAGE_SIZE));
   params.set("offset", String(page * PAGE_SIZE));
 
@@ -237,132 +242,148 @@ export function TransactionsPage() {
         />
       )}
 
-      {/* Filters */}
-      <div className="card flex flex-wrap gap-2 p-3">
-        <Combobox
-          options={accountOptions(accounts.data ?? [], "All accounts")}
-          value={accountId}
-          onChange={(v) => {
-            setAccountId(v);
-            setPage(0);
-          }}
-          className="max-w-[12rem]"
-        />
-        {categoryGroup ? (
-          <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg bg-accent-50 px-3 py-2 text-sm text-accent-800 ring-1 ring-accent-200">
-            Group: <strong className="truncate">{categoryGroup.label}</strong>
-            <button
-              onClick={() => {
-                setCategoryGroup(null);
-                setPage(0);
-              }}
-              className="shrink-0 text-accent-600 hover:text-accent-900"
-              title="Clear group filter"
-            >
-              ✕
-            </button>
-          </span>
-        ) : (
+      {/* Filters — top row: which transactions (who/what); bottom row: when/how much */}
+      <div className="card space-y-3 p-3">
+        <div className="flex flex-wrap gap-2">
           <Combobox
-            options={categoryPickOptions(categories.data ?? [], "All categories", [
-              { value: "__uncategorized__", label: "Uncategorized" },
-            ])}
-            value={categoryFilter}
+            options={accountOptions(accounts.data ?? [], "All accounts")}
+            value={accountId}
             onChange={(v) => {
-              setCategoryFilter(v);
+              setAccountId(v);
               setPage(0);
             }}
             className="max-w-[12rem]"
           />
-        )}
-        <select
-          value={beneficiaryFilter}
-          onChange={(e) => {
-            setBeneficiaryFilter(e.target.value);
-            setPage(0);
-          }}
-          className="input max-w-[12rem]"
-        >
-          <option value="">Anyone / anything</option>
-          <option value="__untagged__">Untagged</option>
-          {BENEFICIARIES.map((b) => (
-            <option key={b} value={b}>
-              {BENEFICIARY_LABELS[b]}
-            </option>
-          ))}
-        </select>
-        <input
-          value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(0);
-          }}
-          placeholder="Search payee/description…"
-          className="input max-w-[16rem]"
-        />
-        <SegmentedControl
-          value={datePreset}
-          onChange={(v) => {
-            setDatePreset(v);
-            setPage(0);
-          }}
-          options={[
-            { value: "all", label: "All" },
-            { value: "this_month", label: "This month" },
-            { value: "last_month", label: "Last month" },
-            { value: "custom", label: "Custom…" },
-          ]}
-        />
-        {datePreset === "custom" && (
-          <>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => {
-                setFromDate(e.target.value);
+          {categoryGroup ? (
+            <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg bg-accent-50 px-3 py-2 text-sm text-accent-800 ring-1 ring-accent-200">
+              Group: <strong className="truncate">{categoryGroup.label}</strong>
+              <button
+                onClick={() => {
+                  setCategoryGroup(null);
+                  setPage(0);
+                }}
+                className="shrink-0 text-accent-600 hover:text-accent-900"
+                title="Clear group filter"
+              >
+                ✕
+              </button>
+            </span>
+          ) : (
+            <Combobox
+              options={categoryPickOptions(categories.data ?? [], "All categories", [
+                { value: "__uncategorized__", label: "Uncategorized" },
+              ])}
+              value={categoryFilter}
+              onChange={(v) => {
+                setCategoryFilter(v);
                 setPage(0);
               }}
-              className="input max-w-[9rem]"
+              className="max-w-[12rem]"
             />
-            <span className="self-center text-sm text-slate-500">to</span>
+          )}
+          <Combobox
+            options={[
+              { value: "", label: "Anyone / anything" },
+              { value: "__untagged__", label: "Untagged" },
+              ...BENEFICIARIES.map((b) => ({ value: b, label: BENEFICIARY_LABELS[b] })),
+            ]}
+            value={beneficiaryFilter}
+            onChange={(v) => {
+              setBeneficiaryFilter(v);
+              setPage(0);
+            }}
+            className="max-w-[12rem]"
+          />
+          <input
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Search payee/description…"
+            className="input min-w-[12rem] flex-1"
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+          <SegmentedControl
+            value={datePreset}
+            onChange={(v) => {
+              setDatePreset(v);
+              setPage(0);
+            }}
+            options={[
+              { value: "all", label: "All" },
+              { value: "this_month", label: "This month" },
+              { value: "last_month", label: "Last month" },
+              { value: "custom", label: "Custom…" },
+            ]}
+          />
+          {datePreset === "custom" && (
+            <>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => {
+                  setFromDate(e.target.value);
+                  setPage(0);
+                }}
+                className="input max-w-[9rem]"
+              />
+              <span className="text-sm text-slate-500">to</span>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => {
+                  setToDate(e.target.value);
+                  setPage(0);
+                }}
+                className="input max-w-[9rem]"
+              />
+            </>
+          )}
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="0.01"
+            value={minAmount}
+            onChange={(e) => {
+              setMinAmount(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Min $"
+            className="input max-w-[6.5rem]"
+          />
+          <span className="text-sm text-slate-500">–</span>
+          <input
+            type="number"
+            inputMode="decimal"
+            min="0"
+            step="0.01"
+            value={maxAmount}
+            onChange={(e) => {
+              setMaxAmount(e.target.value);
+              setPage(0);
+            }}
+            placeholder="Max $"
+            className="input max-w-[6.5rem]"
+          />
+          <label
+            className="ml-auto flex items-center gap-1.5 text-sm text-slate-600"
+            title="Untracked accounts still sync, but their transactions are hidden from the day-to-day view by default"
+          >
             <input
-              type="date"
-              value={toDate}
+              type="checkbox"
+              checked={includeUntracked}
               onChange={(e) => {
-                setToDate(e.target.value);
+                setIncludeUntracked(e.target.checked);
                 setPage(0);
               }}
-              className="input max-w-[9rem]"
             />
-          </>
-        )}
-        <input
-          type="number"
-          inputMode="decimal"
-          min="0"
-          step="0.01"
-          value={minAmount}
-          onChange={(e) => {
-            setMinAmount(e.target.value);
-            setPage(0);
-          }}
-          placeholder="Min $"
-          className="input max-w-[6.5rem]"
-        />
-        <span className="self-center text-sm text-slate-500">–</span>
-        <input
-          type="number"
-          inputMode="decimal"
-          min="0"
-          step="0.01"
-          value={maxAmount}
-          onChange={(e) => {
-            setMaxAmount(e.target.value);
-            setPage(0);
-          }}
-          placeholder="Max $"
-          className="input max-w-[6.5rem]"
-        />
+            Include untracked accounts
+          </label>
+        </div>
       </div>
 
       {/* List */}
@@ -540,22 +561,16 @@ function TxnRow({
           inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-xs"
         />
 
-        <select
+        <Combobox
+          options={[
+            { value: "", label: "Who was it for?" },
+            ...BENEFICIARIES.map((b) => ({ value: b, label: BENEFICIARY_LABELS[b] })),
+          ]}
           value={txn.beneficiary ?? ""}
-          onChange={(e) =>
-            onSave({
-              beneficiary: (e.target.value || null) as Beneficiary | null,
-            })
-          }
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
-        >
-          <option value="">Who was it for?</option>
-          {BENEFICIARIES.map((b) => (
-            <option key={b} value={b}>
-              {BENEFICIARY_LABELS[b]}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => onSave({ beneficiary: (v || null) as Beneficiary | null })}
+          className="w-36"
+          inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+        />
 
         {isTransferKind && (
           <Combobox

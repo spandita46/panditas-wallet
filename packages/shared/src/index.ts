@@ -146,6 +146,10 @@ export interface AccountDTO {
   // Day-of-month, 1-31; SimpleFIN doesn't provide these.
   statementDay: number | null;
   dueDay: number | null;
+  // When true, sync still updates this account's balance but skips ingesting
+  // its transaction feed — for a feed that keeps duplicating another
+  // account's activity under this one (see Account.suppressTransactionSync).
+  suppressTransactionSync: boolean;
 }
 
 export interface TransactionDTO {

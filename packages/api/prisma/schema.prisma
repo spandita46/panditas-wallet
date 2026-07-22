@@ -186,6 +186,13 @@ model Account {
   statementDay Int?
   dueDay       Int?
 
+  // Escape valve for a SimpleFIN feed that keeps echoing another account's
+  // transactions under this one with fresh external ids on every sync (seen
+  // with a Sun Life NREG sub-account duplicating its TFSA sibling's activity)
+  // — sync keeps updating balance/snapshot as normal, just skips transaction
+  // ingestion for this account. Off by default; admin-toggled per account.
+  suppressTransactionSync Boolean @default(false)
+
   transactions   Transaction[]
   contributions  Contribution[]
   goals          Goal[]

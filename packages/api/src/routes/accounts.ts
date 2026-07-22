@@ -27,6 +27,7 @@ const updateAccountSchema = z.object({
   // for credit cards).
   statementDay: dayOfMonth,
   dueDay: dayOfMonth,
+  suppressTransactionSync: z.boolean().optional(),
 });
 
 const mergeSchema = z.object({ intoAccountId: z.string().min(1) });
