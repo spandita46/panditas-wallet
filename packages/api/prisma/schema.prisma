@@ -38,6 +38,8 @@ model User {
   ownedAccounts    Account[]     @relation("AccountOwner")
   accountAccess    AccountUser[]
   benefitingTxns   Transaction[] @relation("TxnBeneficiary")
+  defaultForCategories Category[]     @relation("CategoryDefaultBeneficiary")
+  beneficiaryOfRules   CategoryRule[] @relation("RuleBeneficiary")
 }
 
 model Session {
@@ -177,12 +179,19 @@ model Account {
   // null. Pre-existing rows are backfilled to createdAt in the migration.
   newAcknowledgedAt DateTime?
 
+  // Manual, approximate bill-cycle config for credit_card accounts (SimpleFIN
+  // doesn't provide these). Day-of-month, 1-31; cycles can shift slightly in
+  // reality, so this is a "close enough for a reminder" approximation, not
+  // an authoritative statement date.
+  statementDay Int?
+  dueDay       Int?
+
   transactions   Transaction[]
   contributions  Contribution[]
   goals          Goal[]
   snapshots      BalanceSnapshot[]
   access         AccountUser[]
-  categoryRules  CategoryRule[]
+  ruleConditions CategoryRuleCondition[]
   linkedByRules  CategoryRule[]    @relation("RuleLinkedAccount")
   transferTxns   Transaction[]     @relation("TxnTransferAccount")
 
@@ -277,35 +286,70 @@ model Category {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
+  // Applied to a transaction when a rule assigns this category, but only if
+  // the transaction doesn't already have a beneficiary — never overwrites a
+  // manual tag. E.g. Groceries defaults to "household" since that's true for
+  // the vast majority of grocery spend; a specific rule can still override
+  // this default for the exception (see CategoryRule.beneficiary).
+  defaultBeneficiary       Beneficiary?
+  defaultBeneficiaryUserId String?
+  defaultBeneficiaryUser   User?         @relation("CategoryDefaultBeneficiary", fields: [defaultBeneficiaryUserId], references: [id], onDelete: SetNull)
+
   transactions Transaction[]
   rules        CategoryRule[]
   budgets      Budget[]
 }
 
-enum RuleMatchType {
+enum RuleConditionType {
   account            // any txn from a given account (e.g. Walmart card -> Groceries)
   payee_contains
   description_regex
+  amount_range       // magnitude (abs value) within [minAmount, maxAmount] — either bound optional
+}
+
+enum RuleLogic {
+  all // AND — every condition must match
+  any // OR — any one condition matches
 }
 
 model CategoryRule {
-  id             String        @id @default(cuid())
-  categoryId     String
-  category       Category      @relation(fields: [categoryId], references: [id], onDelete: Cascade)
-  matchType      RuleMatchType
-  matchAccountId String?
-  matchAccount   Account?      @relation(fields: [matchAccountId], references: [id], onDelete: Cascade)
-  pattern        String?
-  priority       Int           @default(0)
+  id         String    @id @default(cuid())
+  categoryId String
+  category   Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  // How this rule's conditions combine. A single-condition rule (the common
+  // case) behaves identically either way.
+  logic      RuleLogic @default(all)
+  conditions CategoryRuleCondition[]
+  priority   Int       @default(0)
   // When set, matching transactions also get their transferAccountId auto-filled
   // (e.g. a "Walmart Mastercard" payee rule auto-links to the Walmart card).
   linkedAccountId String?
   linkedAccount   Account?     @relation("RuleLinkedAccount", fields: [linkedAccountId], references: [id], onDelete: SetNull)
-  createdAt      DateTime      @default(now())
+  // Overrides the category's defaultBeneficiary for transactions this
+  // specific rule matches (e.g. "Groceries" defaults to household, but a
+  // "Kid's snack shop" rule can set family_member/that kid instead).
+  beneficiary       Beneficiary?
+  beneficiaryUserId String?
+  beneficiaryUser   User?        @relation("RuleBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: SetNull)
+  createdAt  DateTime  @default(now())
 
   @@index([categoryId])
-  @@index([matchAccountId])
   @@index([linkedAccountId])
+}
+
+model CategoryRuleCondition {
+  id             String            @id @default(cuid())
+  ruleId         String
+  rule           CategoryRule      @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  type           RuleConditionType
+  matchAccountId String?
+  matchAccount   Account?          @relation(fields: [matchAccountId], references: [id], onDelete: Cascade)
+  pattern        String?
+  minAmount      Decimal?          @db.Decimal(14, 2)
+  maxAmount      Decimal?          @db.Decimal(14, 2)
+
+  @@index([ruleId])
+  @@index([matchAccountId])
 }
 
 // Per-month budget (Phase 2). month = first day of the month.

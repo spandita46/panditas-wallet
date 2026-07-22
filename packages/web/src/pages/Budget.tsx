@@ -2,16 +2,21 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  BENEFICIARIES,
+  BENEFICIARY_LABELS,
   CATEGORY_KINDS,
   CATEGORY_KIND_LABELS,
-  RULE_MATCH_TYPES,
+  RULE_CONDITION_TYPES,
   formatMoney,
   type AccountDTO,
+  type Beneficiary,
   type BudgetLineDTO,
   type CategoryDTO,
   type CategoryKind,
   type CategoryRuleDTO,
-  type RuleMatchType,
+  type FamilyMemberDTO,
+  type RuleConditionType,
+  type RuleLogic,
   type SpendingBreakdown,
 } from "@panditas/shared";
 import { api } from "../api";
@@ -42,6 +47,136 @@ function categoryPickOptions(categories: CategoryDTO[], placeholder: string): Co
 }
 function accountOptions(accounts: AccountDTO[], placeholder: string): ComboboxItem[] {
   return [{ value: "", label: placeholder }, ...accounts.map((a) => ({ value: a.id, label: a.displayName }))];
+}
+
+// ---- Rule condition builder --------------------------------------------
+
+interface ConditionDraft {
+  type: RuleConditionType;
+  matchAccountId: string;
+  pattern: string;
+  minAmount: string;
+  maxAmount: string;
+}
+function emptyCondition(): ConditionDraft {
+  return { type: "payee_contains", matchAccountId: "", pattern: "", minAmount: "", maxAmount: "" };
+}
+function conditionValid(c: ConditionDraft): boolean {
+  if (c.type === "account") return !!c.matchAccountId;
+  if (c.type === "amount_range") return c.minAmount.trim() !== "" || c.maxAmount.trim() !== "";
+  return c.pattern.trim().length > 0;
+}
+function toConditionPayload(c: ConditionDraft) {
+  return {
+    type: c.type,
+    matchAccountId: c.type === "account" ? c.matchAccountId : undefined,
+    pattern: c.type === "payee_contains" || c.type === "description_regex" ? c.pattern.trim() : undefined,
+    minAmount: c.type === "amount_range" && c.minAmount.trim() !== "" ? Number(c.minAmount) : undefined,
+    maxAmount: c.type === "amount_range" && c.maxAmount.trim() !== "" ? Number(c.maxAmount) : undefined,
+  };
+}
+
+interface RuleFormState {
+  categoryId: string;
+  logic: RuleLogic;
+  conditions: ConditionDraft[];
+  linkedAccountId: string;
+  beneficiary: Beneficiary | null;
+  beneficiaryUserId: string;
+}
+function emptyRuleForm(): RuleFormState {
+  return { categoryId: "", logic: "all", conditions: [emptyCondition()], linkedAccountId: "", beneficiary: null, beneficiaryUserId: "" };
+}
+
+function summarizeCondition(c: CategoryRuleDTO["conditions"][number]): string {
+  switch (c.type) {
+    case "account":
+      return `Account is ${c.matchAccountName ?? "?"}`;
+    case "payee_contains":
+      return `Payee contains "${c.pattern}"`;
+    case "description_regex":
+      return `Description matches "${c.pattern}"`;
+    case "amount_range":
+      if (c.minAmount != null && c.maxAmount != null) return `Amount $${c.minAmount}–$${c.maxAmount}`;
+      if (c.minAmount != null) return `Amount ≥ $${c.minAmount}`;
+      if (c.maxAmount != null) return `Amount ≤ $${c.maxAmount}`;
+      return "Amount (any)";
+  }
+}
+function summarizeRule(r: CategoryRuleDTO): string {
+  return r.conditions.map(summarizeCondition).join(r.logic === "any" ? " OR " : " AND ");
+}
+
+function ConditionEditor({
+  condition,
+  accounts,
+  onChange,
+  onRemove,
+}: {
+  condition: ConditionDraft;
+  accounts: AccountDTO[];
+  onChange: (c: ConditionDraft) => void;
+  onRemove?: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-2">
+      <select
+        value={condition.type}
+        onChange={(e) => onChange({ ...condition, type: e.target.value as RuleConditionType })}
+        className="input max-w-[10rem]"
+      >
+        {RULE_CONDITION_TYPES.map((t) => (
+          <option key={t} value={t}>
+            {t === "account"
+              ? "Account is"
+              : t === "payee_contains"
+                ? "Payee contains"
+                : t === "description_regex"
+                  ? "Description matches"
+                  : "Amount between"}
+          </option>
+        ))}
+      </select>
+      {condition.type === "account" ? (
+        <Combobox
+          options={accountOptions(accounts, "Account…")}
+          value={condition.matchAccountId}
+          onChange={(v) => onChange({ ...condition, matchAccountId: v })}
+          className="max-w-[12rem]"
+        />
+      ) : condition.type === "amount_range" ? (
+        <>
+          <input
+            type="number"
+            value={condition.minAmount}
+            onChange={(e) => onChange({ ...condition, minAmount: e.target.value })}
+            placeholder="Min $"
+            className="input w-24"
+          />
+          <span className="text-xs text-slate-400">to</span>
+          <input
+            type="number"
+            value={condition.maxAmount}
+            onChange={(e) => onChange({ ...condition, maxAmount: e.target.value })}
+            placeholder="Max $ (optional)"
+            className="input w-28"
+          />
+        </>
+      ) : (
+        <input
+          value={condition.pattern}
+          onChange={(e) => onChange({ ...condition, pattern: e.target.value })}
+          placeholder="Text to match"
+          className="input max-w-[12rem]"
+        />
+      )}
+      {onRemove && (
+        <button onClick={onRemove} className="text-xs text-slate-400 hover:text-slate-600" title="Remove condition">
+          ✕
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function BudgetPage() {
@@ -237,14 +372,68 @@ function BreakdownCard({ title, entries }: { title: string; entries: { key: stri
   );
 }
 
+// Encodes {beneficiary, beneficiaryUserId} as a single <select> value: "" (no
+// default), "self"/"household"/"external", or "family_member:<userId>".
+function encodeBeneficiary(beneficiary: Beneficiary | null, beneficiaryUserId: string | null): string {
+  if (!beneficiary) return "";
+  if (beneficiary === "family_member") return beneficiaryUserId ? `family_member:${beneficiaryUserId}` : "";
+  return beneficiary;
+}
+function decodeBeneficiary(value: string): { beneficiary: Beneficiary | null; beneficiaryUserId: string | null } {
+  if (!value) return { beneficiary: null, beneficiaryUserId: null };
+  if (value.startsWith("family_member:")) {
+    return { beneficiary: "family_member", beneficiaryUserId: value.slice("family_member:".length) };
+  }
+  return { beneficiary: value as Beneficiary, beneficiaryUserId: null };
+}
+
+function BeneficiarySelect({
+  value,
+  onChange,
+  family,
+  className,
+}: {
+  value: string;
+  onChange: (beneficiary: Beneficiary | null, beneficiaryUserId: string | null) => void;
+  family: FamilyMemberDTO[];
+  className?: string;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => {
+        const { beneficiary, beneficiaryUserId } = decodeBeneficiary(e.target.value);
+        onChange(beneficiary, beneficiaryUserId);
+      }}
+      className={className}
+    >
+      <option value="">No default</option>
+      {BENEFICIARIES.filter((b) => b !== "family_member").map((b) => (
+        <option key={b} value={b}>
+          {BENEFICIARY_LABELS[b]}
+        </option>
+      ))}
+      {family.map((f) => (
+        <option key={f.id} value={`family_member:${f.id}`}>
+          {f.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function CategoryListItem({
   category,
+  family,
   onGroupChange,
   onToggleArchived,
+  onDefaultBeneficiary,
 }: {
   category: CategoryDTO;
+  family: FamilyMemberDTO[];
   onGroupChange: (group: string | null) => void;
   onToggleArchived: () => void;
+  onDefaultBeneficiary: (beneficiary: Beneficiary | null, beneficiaryUserId: string | null) => void;
 }) {
   const [group, setGroupValue] = useState(category.group ?? "");
 
@@ -254,8 +443,8 @@ function CategoryListItem({
   };
 
   return (
-    <div className={`flex items-center justify-between py-1 text-sm ${category.archived ? "opacity-50" : ""}`}>
-      <span className="flex items-center gap-2">
+    <div className={`flex flex-wrap items-center justify-between gap-y-1 py-1 text-sm ${category.archived ? "opacity-50" : ""}`}>
+      <span className="flex flex-wrap items-center gap-2">
         {category.name}
         <input
           value={group}
@@ -277,6 +466,12 @@ function CategoryListItem({
         >
           {CATEGORY_KIND_LABELS[category.kind]}
         </span>
+        <BeneficiarySelect
+          value={encodeBeneficiary(category.defaultBeneficiary, category.defaultBeneficiaryUserId)}
+          onChange={onDefaultBeneficiary}
+          family={family}
+          className="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+        />
       </span>
       <button onClick={onToggleArchived} className="text-xs text-slate-500 underline">
         {category.archived ? "Unarchive" : "Archive"}
@@ -291,6 +486,12 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
     queryClient.invalidateQueries({ queryKey: ["categories"] });
     queryClient.invalidateQueries({ queryKey: ["budgets"] });
   };
+  const family = useQuery({ queryKey: ["family-lookup"], queryFn: () => api.get<FamilyMemberDTO[]>("/users/lookup") });
+  const setDefaultBeneficiary = useMutation({
+    mutationFn: (v: { id: string; beneficiary: Beneficiary | null; beneficiaryUserId: string | null }) =>
+      api.patch(`/categories/${v.id}`, { defaultBeneficiary: v.beneficiary, defaultBeneficiaryUserId: v.beneficiaryUserId }),
+    onSuccess: invalidate,
+  });
 
   const [form, setForm] = useState({ name: "", group: "", kind: "expense" as CategoryKind, monthlyLimit: "" });
   const createCategory = useMutation({
@@ -317,24 +518,19 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
 
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.get<AccountDTO[]>("/accounts") });
   const rules = useQuery({ queryKey: ["category-rules"], queryFn: () => api.get<CategoryRuleDTO[]>("/categories/rules") });
-  const [ruleForm, setRuleForm] = useState({
-    categoryId: "",
-    matchType: "account" as RuleMatchType,
-    matchAccountId: "",
-    pattern: "",
-    linkedAccountId: "",
-  });
+  const [ruleForm, setRuleForm] = useState<RuleFormState>(emptyRuleForm());
   const createRule = useMutation({
     mutationFn: () =>
       api.post("/categories/rules", {
         categoryId: ruleForm.categoryId,
-        matchType: ruleForm.matchType,
-        matchAccountId: ruleForm.matchType === "account" ? ruleForm.matchAccountId : undefined,
-        pattern: ruleForm.matchType !== "account" ? ruleForm.pattern : undefined,
+        logic: ruleForm.logic,
+        conditions: ruleForm.conditions.map(toConditionPayload),
         linkedAccountId: ruleForm.linkedAccountId || undefined,
+        beneficiary: ruleForm.beneficiary || undefined,
+        beneficiaryUserId: ruleForm.beneficiary === "family_member" ? (ruleForm.beneficiaryUserId || undefined) : undefined,
       }),
     onSuccess: () => {
-      setRuleForm({ categoryId: "", matchType: "account", matchAccountId: "", pattern: "", linkedAccountId: "" });
+      setRuleForm(emptyRuleForm());
       queryClient.invalidateQueries({ queryKey: ["category-rules"] });
     },
   });
@@ -345,6 +541,11 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
   const setRuleLinkedAccount = useMutation({
     mutationFn: (v: { id: string; linkedAccountId: string | null }) =>
       api.patch(`/categories/rules/${v.id}`, { linkedAccountId: v.linkedAccountId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
+  });
+  const setRuleBeneficiary = useMutation({
+    mutationFn: (v: { id: string; beneficiary: Beneficiary | null; beneficiaryUserId: string | null }) =>
+      api.patch(`/categories/rules/${v.id}`, { beneficiary: v.beneficiary, beneficiaryUserId: v.beneficiaryUserId }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
   });
 
@@ -368,8 +569,12 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
             <CategoryListItem
               key={c.id}
               category={c}
+              family={family.data ?? []}
               onGroupChange={(group) => setGroup.mutate({ id: c.id, group })}
               onToggleArchived={() => toggleArchived.mutate({ id: c.id, archived: !c.archived })}
+              onDefaultBeneficiary={(beneficiary, beneficiaryUserId) =>
+                setDefaultBeneficiary.mutate({ id: c.id, beneficiary, beneficiaryUserId })
+              }
             />
           ))}
         </div>
@@ -410,82 +615,111 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
       <div className="card card-pad">
         <h3 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500">Auto-tag rules</h3>
         <p className="mb-3 text-xs text-slate-500">
-          E.g. "Walmart card → Groceries". New transactions are tagged automatically on sync.
+          E.g. "Walmart card → Groceries". New transactions are tagged automatically on sync. A rule can combine
+          several conditions (all must match, or any one of them) and include an amount range.
         </p>
-        <div className="space-y-1">
-          {rules.data?.map((r) => (
-            <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 py-1 text-sm">
-              <span>
-                {r.matchType === "account" ? r.matchAccountName : `"${r.pattern}"`} → <strong>{r.categoryName}</strong>
-              </span>
-              <div className="flex items-center gap-2">
-                <Combobox
-                  options={accountOptions(accounts.data ?? [], "No linked account")}
-                  value={r.linkedAccountId ?? ""}
-                  onChange={(v) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: v || null })}
-                  title="Auto-link a transfer counterpart account"
-                  className="w-40"
-                  inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
-                />
-                <button onClick={() => deleteRule.mutate(r.id)} className="text-xs text-slate-500 underline">
-                  Remove
-                </button>
+        <div className="space-y-4">
+          {Object.entries(groupBy(rules.data ?? [], (r) => r.categoryName)).map(([categoryName, categoryRules]) => (
+            <div key={categoryName}>
+              <p className="mb-1 text-xs font-semibold text-slate-500">{categoryName}</p>
+              <div className="space-y-1">
+                {categoryRules.map((r) => (
+                  <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-2 py-1.5 text-sm">
+                    <span>{summarizeRule(r)}</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <BeneficiarySelect
+                        value={encodeBeneficiary(r.beneficiary, r.beneficiaryUserId)}
+                        onChange={(beneficiary, beneficiaryUserId) => setRuleBeneficiary.mutate({ id: r.id, beneficiary, beneficiaryUserId })}
+                        family={family.data ?? []}
+                        className="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                      />
+                      <Combobox
+                        options={accountOptions(accounts.data ?? [], "No linked account")}
+                        value={r.linkedAccountId ?? ""}
+                        onChange={(v) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: v || null })}
+                        title="Auto-link a transfer counterpart account"
+                        className="w-40"
+                        inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                      />
+                      <button onClick={() => deleteRule.mutate(r.id)} className="text-xs text-slate-500 underline">
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           ))}
           {rules.data?.length === 0 && <p className="text-sm text-slate-500">No rules yet.</p>}
         </div>
-        <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
-          <Combobox
-            options={categoryPickOptions(categories, "Category…")}
-            value={ruleForm.categoryId}
-            onChange={(v) => setRuleForm({ ...ruleForm, categoryId: v })}
-            className="max-w-[10rem]"
-          />
-          <select
-            value={ruleForm.matchType}
-            onChange={(e) => setRuleForm({ ...ruleForm, matchType: e.target.value as RuleMatchType })}
-            className="input max-w-[10rem]"
-          >
-            {RULE_MATCH_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t === "account" ? "Account is" : t === "payee_contains" ? "Payee contains" : "Description matches"}
-              </option>
-            ))}
-          </select>
-          {ruleForm.matchType === "account" ? (
+
+        <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+          <div className="flex flex-wrap items-center gap-2">
             <Combobox
-              options={accountOptions(accounts.data ?? [], "Account…")}
-              value={ruleForm.matchAccountId}
-              onChange={(v) => setRuleForm({ ...ruleForm, matchAccountId: v })}
+              options={categoryPickOptions(categories, "Category…")}
+              value={ruleForm.categoryId}
+              onChange={(v) => setRuleForm({ ...ruleForm, categoryId: v })}
+              className="max-w-[10rem]"
+            />
+            {ruleForm.conditions.length > 1 && (
+              <select
+                value={ruleForm.logic}
+                onChange={(e) => setRuleForm({ ...ruleForm, logic: e.target.value as RuleLogic })}
+                className="input max-w-[10.5rem]"
+                title="How the conditions below combine"
+              >
+                <option value="all">All conditions match</option>
+                <option value="any">Any condition matches</option>
+              </select>
+            )}
+            <BeneficiarySelect
+              value={encodeBeneficiary(ruleForm.beneficiary, ruleForm.beneficiaryUserId)}
+              onChange={(beneficiary, beneficiaryUserId) =>
+                setRuleForm({ ...ruleForm, beneficiary, beneficiaryUserId: beneficiaryUserId ?? "" })
+              }
+              family={family.data ?? []}
+              className="input max-w-[10rem]"
+            />
+            <Combobox
+              options={accountOptions(accounts.data ?? [], "Links to account… (optional)")}
+              value={ruleForm.linkedAccountId}
+              onChange={(v) => setRuleForm({ ...ruleForm, linkedAccountId: v })}
+              title="For transfers: auto-fill which account this links to"
               className="max-w-[12rem]"
             />
-          ) : (
-            <input
-              value={ruleForm.pattern}
-              onChange={(e) => setRuleForm({ ...ruleForm, pattern: e.target.value })}
-              placeholder="Text to match"
-              className="input max-w-[12rem]"
+          </div>
+
+          {ruleForm.conditions.map((condition, i) => (
+            <ConditionEditor
+              key={i}
+              condition={condition}
+              accounts={accounts.data ?? []}
+              onChange={(next) =>
+                setRuleForm({ ...ruleForm, conditions: ruleForm.conditions.map((c, ci) => (ci === i ? next : c)) })
+              }
+              onRemove={
+                ruleForm.conditions.length > 1
+                  ? () => setRuleForm({ ...ruleForm, conditions: ruleForm.conditions.filter((_, ci) => ci !== i) })
+                  : undefined
+              }
             />
-          )}
-          <Combobox
-            options={accountOptions(accounts.data ?? [], "Links to account… (optional)")}
-            value={ruleForm.linkedAccountId}
-            onChange={(v) => setRuleForm({ ...ruleForm, linkedAccountId: v })}
-            title="For transfers: auto-fill which account this links to"
-            className="max-w-[12rem]"
-          />
-          <button
-            onClick={() => createRule.mutate()}
-            disabled={
-              !ruleForm.categoryId ||
-              (ruleForm.matchType === "account" ? !ruleForm.matchAccountId : !ruleForm.pattern) ||
-              createRule.isPending
-            }
-            className="rounded-lg bg-accent-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-          >
-            Add rule
-          </button>
+          ))}
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setRuleForm({ ...ruleForm, conditions: [...ruleForm.conditions, emptyCondition()] })}
+              className="text-xs text-accent-600 hover:underline"
+            >
+              + Add condition
+            </button>
+            <button
+              onClick={() => createRule.mutate()}
+              disabled={!ruleForm.categoryId || !ruleForm.conditions.every(conditionValid) || createRule.isPending}
+              className="rounded-lg bg-accent-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              Add rule
+            </button>
+          </div>
         </div>
       </div>
     </div>

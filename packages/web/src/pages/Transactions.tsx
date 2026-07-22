@@ -1,18 +1,17 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BENEFICIARIES,
   BENEFICIARY_LABELS,
   CATEGORY_KIND_LABELS,
-  RULE_MATCH_TYPES,
   formatMoney,
   type AccountDTO,
   type Beneficiary,
   type CategoryDTO,
   type CreateCategoryRuleInput,
   type FamilyMemberDTO,
-  type RuleMatchType,
+  type RuleConditionType,
   type TransactionDTO,
   type TransactionListResponse,
   type TransactionRowDTO,
@@ -93,6 +92,7 @@ export function TransactionsPage() {
   const [maxAmount, setMaxAmount] = useState("");
   const [page, setPage] = useState(0);
   const [ruleMessage, setRuleMessage] = useState<string | null>(null);
+  const [showAddTxn, setShowAddTxn] = useState(false);
 
   const accounts = useQuery({
     queryKey: ["accounts"],
@@ -178,6 +178,17 @@ export function TransactionsPage() {
     },
   });
 
+  const createManualTxn = useMutation({
+    mutationFn: (v: { accountId: string; postedAt: string; amount: number; payee?: string; description?: string; categoryId?: string }) =>
+      api.post("/transactions/manual", v),
+    onSuccess: () => {
+      setShowAddTxn(false);
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+
   const total = txns.data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -192,21 +203,38 @@ export function TransactionsPage() {
             Tag each one with a category and who it was for.
           </p>
         </div>
-        <button
-          onClick={() => recategorize.mutate()}
-          disabled={recategorize.isPending}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-        >
-          {recategorize.isPending
-            ? "Applying rules…"
-            : "Recategorize uncategorized"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowAddTxn((v) => !v)}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+          >
+            {showAddTxn ? "Cancel" : "+ Add transaction"}
+          </button>
+          <button
+            onClick={() => recategorize.mutate()}
+            disabled={recategorize.isPending}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+          >
+            {recategorize.isPending
+              ? "Applying rules…"
+              : "Recategorize uncategorized"}
+          </button>
+        </div>
       </header>
 
       {ruleMessage && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
           {ruleMessage}
         </div>
+      )}
+
+      {showAddTxn && (
+        <AddTransactionForm
+          accounts={accounts.data ?? []}
+          categories={categories.data ?? []}
+          busy={createManualTxn.isPending}
+          onSubmit={(v) => createManualTxn.mutate(v)}
+        />
       )}
 
       {/* Filters */}
@@ -614,7 +642,7 @@ function CreateRuleForm({
     txnPatch: Record<string, unknown>,
   ) => void;
 }) {
-  const [matchType, setMatchType] = useState<RuleMatchType>(
+  const [matchType, setMatchType] = useState<Exclude<RuleConditionType, "amount_range">>(
     txn.payee ? "payee_contains" : "account",
   );
   const [pattern, setPattern] = useState(txn.payee ?? "");
@@ -630,9 +658,14 @@ function CreateRuleForm({
     if (!canCreate) return;
     const rule: CreateCategoryRuleInput = {
       categoryId,
-      matchType,
-      matchAccountId: matchType === "account" ? txn.accountId : undefined,
-      pattern: matchType !== "account" ? pattern.trim() : undefined,
+      logic: "all",
+      conditions: [
+        {
+          type: matchType,
+          matchAccountId: matchType === "account" ? txn.accountId : undefined,
+          pattern: matchType !== "account" ? pattern.trim() : undefined,
+        },
+      ],
       linkedAccountId: linkedAccountId || undefined,
       priority: 10,
     };
@@ -651,18 +684,12 @@ function CreateRuleForm({
       <div className="flex flex-wrap items-center gap-2">
         <select
           value={matchType}
-          onChange={(e) => setMatchType(e.target.value as RuleMatchType)}
+          onChange={(e) => setMatchType(e.target.value as Exclude<RuleConditionType, "amount_range">)}
           className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
         >
-          {RULE_MATCH_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {t === "account"
-                ? `This account (${txn.accountName})`
-                : t === "payee_contains"
-                  ? "Payee contains…"
-                  : "Description matches…"}
-            </option>
-          ))}
+          <option value="account">This account ({txn.accountName})</option>
+          <option value="payee_contains">Payee contains…</option>
+          <option value="description_regex">Description matches…</option>
         </select>
         {matchType !== "account" && (
           <input
@@ -700,5 +727,120 @@ function CreateRuleForm({
         </button>
       </div>
     </div>
+  );
+}
+
+function todayDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function AddTransactionForm({
+  accounts,
+  categories,
+  busy,
+  onSubmit,
+}: {
+  accounts: AccountDTO[];
+  categories: CategoryDTO[];
+  busy: boolean;
+  onSubmit: (v: { accountId: string; postedAt: string; amount: number; payee?: string; description?: string; categoryId?: string }) => void;
+}) {
+  const [accountId, setAccountId] = useState("");
+  const [direction, setDirection] = useState<"in" | "out">("out");
+  const [postedAt, setPostedAt] = useState(todayDate());
+  const [amount, setAmount] = useState("");
+  const [payee, setPayee] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+
+  const canSubmit = accountId && postedAt && Number(amount) > 0;
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const magnitude = Math.abs(Number(amount));
+    if (!accountId || !magnitude) return;
+    onSubmit({
+      accountId,
+      postedAt,
+      amount: direction === "in" ? magnitude : -magnitude,
+      ...(payee.trim() ? { payee: payee.trim() } : {}),
+      ...(categoryId ? { categoryId } : {}),
+    });
+    setAmount("");
+    setPayee("");
+    setCategoryId("");
+  };
+
+  return (
+    <form onSubmit={submit} className="card flex flex-wrap items-end gap-3 p-4">
+      <label className="text-xs font-medium text-slate-600">
+        Account
+        <Combobox
+          options={accountOptions(accounts, "Choose account…")}
+          value={accountId}
+          onChange={setAccountId}
+          className="mt-1 w-44"
+          inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        />
+      </label>
+      <label className="text-xs font-medium text-slate-600">
+        Date
+        <input
+          type="date"
+          value={postedAt}
+          onChange={(e) => setPostedAt(e.target.value)}
+          required
+          className="mt-1 block w-36 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        />
+      </label>
+      <label className="text-xs font-medium text-slate-600">
+        Direction
+        <select
+          value={direction}
+          onChange={(e) => setDirection(e.target.value as "in" | "out")}
+          className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        >
+          <option value="out">Money out</option>
+          <option value="in">Money in</option>
+        </select>
+      </label>
+      <label className="text-xs font-medium text-slate-600">
+        Amount
+        <input
+          type="number"
+          step="0.01"
+          min="0.01"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          required
+          className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        />
+      </label>
+      <label className="text-xs font-medium text-slate-600">
+        Payee
+        <input
+          value={payee}
+          onChange={(e) => setPayee(e.target.value)}
+          placeholder="Optional"
+          className="mt-1 block w-40 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        />
+      </label>
+      <label className="text-xs font-medium text-slate-600">
+        Category
+        <Combobox
+          options={categoryPickOptions(categories, "Optional")}
+          value={categoryId}
+          onChange={setCategoryId}
+          className="mt-1 w-40"
+          inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        />
+      </label>
+      <button
+        type="submit"
+        disabled={!canSubmit || busy}
+        className="rounded-lg bg-accent-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-700 disabled:opacity-50"
+      >
+        {busy ? "Adding…" : "Add transaction"}
+      </button>
+    </form>
   );
 }

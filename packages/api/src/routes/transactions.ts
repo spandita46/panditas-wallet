@@ -3,8 +3,13 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
   BENEFICIARIES,
+  createManualTransactionSchema,
+  importCommitSchema,
+  importPreviewSchema,
   linkTransferSchema,
   tagTransactionSchema,
+  type ImportCommitResponse,
+  type ImportPreviewResponse,
   type TransactionListResponse,
   type TransferSuggestionDTO,
 } from "@panditas/shared";
@@ -267,6 +272,112 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       total,
     };
     return response;
+  });
+
+  // Record a transaction the bank feed won't capture — cash, a reporting
+  // gap, backfilling before SimpleFIN was connected. Works on any account,
+  // synced or manual. Also nudges the account's balance and snapshots it,
+  // since there's no sync to pick up the change otherwise; a later SimpleFIN
+  // sync overwrites currentBalance wholesale anyway, so this is only ever a
+  // stopgap for synced accounts, same as it is the source of truth for manual ones.
+  app.post("/manual", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const parsed = createManualTransactionSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+
+    const account = await prisma.account.findUnique({ where: { id: parsed.data.accountId } });
+    if (!account) return reply.code(404).send({ error: "Account not found" });
+
+    const [txn, updatedAccount] = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          accountId: parsed.data.accountId,
+          postedAt: new Date(`${parsed.data.postedAt}T00:00:00.000Z`),
+          amount: parsed.data.amount,
+          payee: parsed.data.payee ?? null,
+          description: parsed.data.description ?? null,
+          categoryId: parsed.data.categoryId ?? null,
+          source: "manual",
+        },
+        include: withRelations,
+      }),
+      prisma.account.update({
+        where: { id: parsed.data.accountId },
+        data: { currentBalance: { increment: parsed.data.amount } },
+      }),
+    ]);
+    await prisma.balanceSnapshot.create({
+      data: { accountId: account.id, balance: updatedAccount.currentBalance },
+    });
+
+    return reply.code(201).send(toTransactionDTO(txn));
+  });
+
+  // Bulk import (a bank export beyond SimpleFIN's 90-day window). File
+  // parsing and column mapping happen client-side — this only ever sees
+  // already-normalized rows. Flags likely duplicates (same account, date,
+  // amount) for the user to review before committing; not exact dedup, since
+  // imported rows have no externalId to match on. Admin-only, same as other
+  // structural account/transaction bulk operations.
+  app.post("/import/preview", { preHandler: requireRole("admin") }, async (request, reply) => {
+    const parsed = importPreviewSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+    const { accountId, rows } = parsed.data;
+
+    const account = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!account) return reply.code(404).send({ error: "Account not found" });
+
+    const dates = rows.map((r) => new Date(`${r.postedAt}T00:00:00.000Z`));
+    const existing = await prisma.transaction.findMany({
+      where: {
+        accountId,
+        postedAt: { gte: new Date(Math.min(...dates.map((d) => d.getTime()))), lte: new Date(Math.max(...dates.map((d) => d.getTime()))) },
+      },
+      select: { postedAt: true, amount: true },
+    });
+    const existingKeys = new Set(existing.map((t) => `${t.postedAt.toISOString().slice(0, 10)}|${Number(t.amount)}`));
+
+    const result: ImportPreviewResponse = {
+      rows: rows.map((r, index) => ({
+        index,
+        postedAt: r.postedAt,
+        amount: r.amount,
+        payee: r.payee ?? null,
+        memo: r.memo ?? null,
+        duplicate: existingKeys.has(`${r.postedAt}|${r.amount}`),
+      })),
+      duplicateCount: 0,
+    };
+    result.duplicateCount = result.rows.filter((r) => r.duplicate).length;
+    return result;
+  });
+
+  // Commits rows the user confirmed in the preview step (already excludes
+  // whatever they chose to skip). Historical backfill only — deliberately
+  // does NOT touch currentBalance/BalanceSnapshot, since the account's
+  // current balance is already correct from sync (or from manual edits) and
+  // isn't affected by filling in older history.
+  app.post("/import/commit", { preHandler: requireRole("admin") }, async (request, reply) => {
+    const parsed = importCommitSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+    const { accountId, rows } = parsed.data;
+
+    const account = await prisma.account.findUnique({ where: { id: accountId } });
+    if (!account) return reply.code(404).send({ error: "Account not found" });
+
+    await prisma.transaction.createMany({
+      data: rows.map((r) => ({
+        accountId,
+        postedAt: new Date(`${r.postedAt}T00:00:00.000Z`),
+        amount: r.amount,
+        payee: r.payee ?? null,
+        memo: r.memo ?? null,
+        source: "manual" as const,
+      })),
+    });
+    const recategorized = await recategorizeAll(true);
+
+    const response: ImportCommitResponse = { imported: rows.length, recategorized };
+    return reply.code(201).send(response);
   });
 
   // Link a transaction to its transfer counterpart (sets transferAccountId on

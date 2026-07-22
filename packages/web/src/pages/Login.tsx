@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
 import { useAuth, type SessionUser } from "../auth";
+import { APP_NAME } from "../appName";
 
 export function LoginPage() {
   const { refresh } = useAuth();
@@ -30,7 +31,7 @@ export function LoginPage() {
         className="w-full max-w-sm space-y-4 rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200"
       >
         <div className="text-center">
-          <h1 className="text-2xl font-semibold text-slate-900">Panditas Wallet</h1>
+          <h1 className="text-2xl font-semibold text-slate-900">{APP_NAME}</h1>
           <p className="mt-1 text-sm text-slate-500">Family finances, on your network only.</p>
         </div>
         <label className="block text-sm font-medium text-slate-700">

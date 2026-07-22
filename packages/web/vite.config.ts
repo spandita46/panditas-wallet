@@ -5,6 +5,8 @@ import { defineConfig } from "vite";
 // (keeps session cookies simple). LAN access: run with --host.
 export default defineConfig({
   plugins: [react()],
+  // The monorepo's single .env lives at the repo root, not this package's dir.
+  envDir: "../..",
   server: {
     port: 5173,
     host: true,

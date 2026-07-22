@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../auth";
+import { APP_NAME } from "../appName";
 
 export function Layout() {
   const { user, refresh } = useAuth();
@@ -20,7 +21,7 @@ export function Layout() {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
           <div className="flex items-center gap-6">
-            <span className="font-semibold text-slate-900">Panditas Wallet</span>
+            <span className="font-semibold text-slate-900">{APP_NAME}</span>
             <nav className="flex gap-1">
               <NavLink to="/" end className={linkClass}>
                 Dashboard
@@ -38,6 +39,9 @@ export function Layout() {
                   </NavLink>
                   <NavLink to="/users" className={linkClass}>
                     Users
+                  </NavLink>
+                  <NavLink to="/import" className={linkClass}>
+                    Import
                   </NavLink>
                 </>
               )}

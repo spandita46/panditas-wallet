@@ -10,6 +10,8 @@ import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
 import { toAccountDTO } from "../mappers.js";
 
+const dayOfMonth = z.number().int().min(1).max(31).nullable().optional();
+
 const updateAccountSchema = z.object({
   name: z.string().min(1).optional(),
   label: z.string().max(60).nullable().optional(),
@@ -20,6 +22,11 @@ const updateAccountSchema = z.object({
   // Dismisses the "New" badge — always stamped as "now" server-side, never
   // client-suppliable as an arbitrary date.
   acknowledgeNew: z.literal(true).optional(),
+  // Manual bill-cycle config — meaningful for credit_card accounts only, but
+  // not enforced here (harmless if set on another type; UI only offers it
+  // for credit cards).
+  statementDay: dayOfMonth,
+  dueDay: dayOfMonth,
 });
 
 const mergeSchema = z.object({ intoAccountId: z.string().min(1) });
@@ -37,7 +44,13 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       include: withMergedInto,
       orderBy: [{ type: "asc" }, { name: "asc" }],
     });
-    return accounts.map(toAccountDTO);
+    const pendingSums = await prisma.transaction.groupBy({
+      by: ["accountId"],
+      where: { pending: true, accountId: { in: accounts.map((a) => a.id) } },
+      _sum: { amount: true },
+    });
+    const pendingByAccount = new Map(pendingSums.map((s) => [s.accountId, Number(s._sum.amount ?? 0)]));
+    return accounts.map((a) => toAccountDTO(a, pendingByAccount.get(a.id) ?? 0));
   });
 
   // Create a manual account (Coinbase, cash, piggy bank, etc.). Admin-only config.
@@ -137,7 +150,7 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
       });
       // Existing auto-tag/auto-link rules referencing the old account should
       // keep firing against the account that's actually still live.
-      await tx.categoryRule.updateMany({ where: { matchAccountId: id }, data: { matchAccountId: intoAccountId } });
+      await tx.categoryRuleCondition.updateMany({ where: { matchAccountId: id }, data: { matchAccountId: intoAccountId } });
       await tx.categoryRule.updateMany({ where: { linkedAccountId: id }, data: { linkedAccountId: intoAccountId } });
       return updated;
     });

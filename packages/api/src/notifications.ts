@@ -12,7 +12,7 @@ async function resolveRecipient(): Promise<string | null> {
   return admin?.email ?? null;
 }
 
-function appLink(path: string): string | null {
+export function appLink(path: string): string | null {
   if (!env.APP_URL) return null;
   return `${env.APP_URL.replace(/\/+$/, "")}${path}`;
 }
@@ -35,14 +35,14 @@ export async function notifyInstitutionBroken(institution: {
     `${institution.name} ${reason} on your last SimpleFIN sync.`,
     institution.statusMessage ? `Details: ${institution.statusMessage}` : null,
     settingsUrl
-      ? `Open Panditas Wallet: ${settingsUrl}`
-      : "Open Panditas Wallet's Settings page to see connection health.",
+      ? `Open ${env.APP_NAME}: ${settingsUrl}`
+      : `Open ${env.APP_NAME}'s Settings page to see connection health.`,
     `Reconnect on SimpleFIN's own dashboard: ${SIMPLEFIN_BRIDGE_URL}`,
   ].filter((l): l is string => Boolean(l));
 
   await sendMail({
     to,
-    subject: `Panditas Wallet: ${institution.name} needs reconnecting`,
+    subject: `${env.APP_NAME}: ${institution.name} needs reconnecting`,
     text: lines.join("\n\n"),
   });
 }
@@ -62,14 +62,14 @@ export async function notifyConnectionBroken(connection: {
     `${name} failed on your last SimpleFIN sync — this affects every institution under this connection, not just one.`,
     connection.statusMessage ? `Details: ${connection.statusMessage}` : null,
     settingsUrl
-      ? `Open Panditas Wallet: ${settingsUrl}`
-      : "Open Panditas Wallet's Settings page to see connection health.",
+      ? `Open ${env.APP_NAME}: ${settingsUrl}`
+      : `Open ${env.APP_NAME}'s Settings page to see connection health.`,
     `Reconnect on SimpleFIN's own dashboard: ${SIMPLEFIN_BRIDGE_URL}`,
   ].filter((l): l is string => Boolean(l));
 
   await sendMail({
     to,
-    subject: `Panditas Wallet: ${name} disconnected`,
+    subject: `${env.APP_NAME}: ${name} disconnected`,
     text: lines.join("\n\n"),
   });
 }

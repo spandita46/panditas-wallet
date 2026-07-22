@@ -14,6 +14,13 @@ export function toAccountDTO(
     institution: Institution | null;
     mergedInto?: { name: string; label: string | null } | null;
   },
+  // Signed sum of this account's still-pending transactions (positive = money
+  // in, negative = money out — same convention as Transaction.amount).
+  // Reported balance often lags pending activity by a day or two, and banks
+  // differ on when they fold it in — this lets the UI show both numbers
+  // instead of silently trusting one. Omitted callers (dashboard/piggybank,
+  // which don't display it) get 0, i.e. reported === estimated.
+  pendingTotal = 0,
 ): AccountDTO {
   return {
     id: account.id,
@@ -36,6 +43,10 @@ export function toAccountDTO(
     isNew: !account.newAcknowledgedAt,
     mergedIntoId: account.mergedIntoId,
     mergedIntoName: account.mergedInto ? (account.mergedInto.label ?? account.mergedInto.name) : null,
+    pendingTotal,
+    estimatedBalance: Number(account.currentBalance) + pendingTotal,
+    statementDay: account.statementDay,
+    dueDay: account.dueDay,
   };
 }
 
