@@ -4,6 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ACCOUNT_TYPES, formatMoney, SIMPLEFIN_BRIDGE_URL, type AccountDTO, type AccountType } from "@panditas/shared";
 import { api, ApiError } from "../api";
 import { Combobox } from "../components/ui/Combobox";
+import { SegmentedControl } from "../components/ui/SegmentedControl";
+
+type AccountTab = "active" | "untracked" | "merged";
 
 interface SimplefinStatus {
   connections: { id: string; label: string | null; status: string; statusMessage: string | null; lastSyncedAt: string | null }[];
@@ -33,6 +36,7 @@ export function SettingsPage() {
   const queryClient = useQueryClient();
   const [token, setToken] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [accountTab, setAccountTab] = useState<AccountTab>("active");
 
   const status = useQuery({
     queryKey: ["simplefin-status"],
@@ -118,6 +122,12 @@ export function SettingsPage() {
     mutationFn: (id: string) => api.post(`/accounts/${id}/unmerge`),
     onSuccess: invalidate,
   });
+
+  const activeAccounts = accounts.data?.filter((a) => a.isTracked && !a.mergedIntoId) ?? [];
+  const untrackedAccounts = accounts.data?.filter((a) => !a.isTracked && !a.mergedIntoId) ?? [];
+  const mergedAccounts = accounts.data?.filter((a) => a.mergedIntoId) ?? [];
+  const visibleAccounts =
+    accountTab === "active" ? activeAccounts : accountTab === "untracked" ? untrackedAccounts : mergedAccounts;
 
   return (
     <div className="space-y-10">
@@ -235,7 +245,18 @@ export function SettingsPage() {
 
       {/* Account type editor */}
       <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Accounts</h2>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Accounts</h2>
+          <SegmentedControl
+            value={accountTab}
+            onChange={setAccountTab}
+            options={[
+              { value: "active", label: `Active (${activeAccounts.length})` },
+              { value: "untracked", label: `Untracked (${untrackedAccounts.length})` },
+              { value: "merged", label: `Merged (${mergedAccounts.length})` },
+            ]}
+          />
+        </div>
         <p className="mb-3 text-sm text-slate-600">
           Sync guesses each account's type — correct any that are wrong (it affects net-worth math).
           If a SimpleFIN reconnect ever creates a duplicate account (same real bank account, new id),
@@ -243,7 +264,10 @@ export function SettingsPage() {
           Untick <strong>Track</strong> for the general case of an unwanted duplicate or unused account.
         </p>
         <div className="card">
-          {accounts.data?.map((a) => (
+          {visibleAccounts.length === 0 && (
+            <p className="p-4 text-sm text-slate-500">No accounts here.</p>
+          )}
+          {visibleAccounts.map((a) => (
             <AccountRow
               key={a.id}
               account={a}
@@ -302,120 +326,99 @@ function AccountRow({
   const merged = Boolean(account.mergedIntoId);
 
   return (
-    <div
-      className={`grid grid-cols-[minmax(0,1fr)_3.5rem_4.5rem_9rem_8rem_10rem_5rem] items-center gap-3 border-b border-slate-100 bg-white p-3 text-sm last:border-0 ${
-        account.isTracked ? "" : "opacity-60"
-      }`}
-    >
-      <div className="min-w-0">
+    <div className={`border-b border-slate-100 bg-white p-4 text-sm last:border-0 ${account.isTracked ? "" : "opacity-60"}`}>
+      <div className="flex items-center justify-between gap-4">
         <input
           value={label}
           onChange={(e) => setLabelValue(e.target.value)}
           onBlur={commitLabel}
           onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
           placeholder={account.name}
-          className="w-full max-w-xs rounded-lg border border-slate-300 px-2 py-1 text-sm font-medium text-slate-900"
+          className="w-full max-w-sm rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm font-medium text-slate-900"
         />
-        <p className="mt-1 truncate text-xs text-slate-500">
-          {account.institutionName ?? "Manual"} · {account.name} ·{" "}
-          {formatMoney(account.currentBalance, account.currency)}
-          {account.isNew && (
-            <span className="ml-2 rounded bg-accent-100 px-1.5 py-0.5 text-accent-700">New</span>
-          )}
-          {!account.isTracked && !merged && (
-            <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-slate-600">Not tracked</span>
-          )}
-          {merged && (
-            <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-slate-600">
-              Merged into {account.mergedIntoName}
-            </span>
-          )}
-        </p>
+        {!merged && (
+          <button
+            onClick={() => onTracked(!account.isTracked)}
+            className="shrink-0 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100"
+          >
+            {account.isTracked ? "Untrack" : "Track"}
+          </button>
+        )}
       </div>
 
-      {account.isNew ? (
-        <button onClick={onAcknowledgeNew} className="justify-self-start text-xs text-accent-600 hover:underline">
-          Got it
-        </button>
-      ) : (
-        <div />
-      )}
+      <p className="mt-2 truncate text-xs text-slate-500">
+        {account.institutionName ?? "Manual"} · {account.name} ·{" "}
+        {formatMoney(account.currentBalance, account.currency)}
+        {account.isNew && (
+          <span className="ml-2 rounded bg-accent-100 px-1.5 py-0.5 text-accent-700">New</span>
+        )}
+        {!account.isTracked && !merged && (
+          <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-slate-600">Not tracked</span>
+        )}
+        {merged && (
+          <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-slate-600">
+            Merged into {account.mergedIntoName}
+          </span>
+        )}
+      </p>
 
-      {merged ? (
-        <div />
-      ) : (
-        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
-          <input
-            type="checkbox"
-            checked={account.isTracked}
-            onChange={(e) => onTracked(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300"
-          />
-          Track
-        </label>
-      )}
-
-      {merged ? (
-        <div />
-      ) : (
-        <Combobox
-          options={[{ value: "", label: "Shared" }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
-          value={account.ownerUserId ?? ""}
-          onChange={(v) => onOwner(v || null)}
-          title="Account owner (for individual spending)"
-          className="w-36"
-          inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-sm"
-        />
-      )}
-
-      {merged ? (
-        <div />
-      ) : (
-        <select
-          value={account.type}
-          onChange={(e) => onType(e.target.value as AccountType)}
-          className="w-32 rounded-lg border border-slate-300 px-2 py-1 text-sm"
-        >
-          {ACCOUNT_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {TYPE_LABELS[t]}
-            </option>
-          ))}
-        </select>
-      )}
-
-      {!merged && mergeCandidates.length > 0 ? (
-        <Combobox
-          options={mergeCandidates.map((a) => ({ value: a.id, label: a.displayName }))}
-          value={mergeTarget}
-          onChange={setMergeTarget}
-          placeholder="Merge into…"
-          title="Merge this account into another (same institution) — e.g. after a SimpleFIN reconnect"
-          className="w-40"
-          inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-sm"
-        />
-      ) : (
-        <div />
-      )}
-
-      {merged ? (
-        <button
-          onClick={onUnmerge}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
-        >
-          Unmerge
-        </button>
-      ) : mergeCandidates.length > 0 ? (
-        <button
-          onClick={() => mergeTarget && onMerge(mergeTarget)}
-          disabled={!mergeTarget}
-          className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
-        >
-          Merge
-        </button>
-      ) : (
-        <div />
-      )}
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        {account.isNew && (
+          <button onClick={onAcknowledgeNew} className="text-xs text-accent-600 hover:underline">
+            Got it
+          </button>
+        )}
+        {merged ? (
+          <button
+            onClick={onUnmerge}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+          >
+            Unmerge
+          </button>
+        ) : (
+          <>
+            <Combobox
+              options={[{ value: "", label: "Shared" }, ...users.map((u) => ({ value: u.id, label: u.name }))]}
+              value={account.ownerUserId ?? ""}
+              onChange={(v) => onOwner(v || null)}
+              title="Account owner (for individual spending)"
+              className="w-36"
+              inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+            <select
+              value={account.type}
+              onChange={(e) => onType(e.target.value as AccountType)}
+              className="w-32 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            >
+              {ACCOUNT_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {TYPE_LABELS[t]}
+                </option>
+              ))}
+            </select>
+            {mergeCandidates.length > 0 && (
+              <>
+                <Combobox
+                  options={mergeCandidates.map((a) => ({ value: a.id, label: a.displayName }))}
+                  value={mergeTarget}
+                  onChange={setMergeTarget}
+                  placeholder="Merge into…"
+                  title="Merge this account into another (same institution) — e.g. after a SimpleFIN reconnect"
+                  className="w-40"
+                  inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+                />
+                <button
+                  onClick={() => mergeTarget && onMerge(mergeTarget)}
+                  disabled={!mergeTarget}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Merge
+                </button>
+              </>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
