@@ -54,7 +54,7 @@ export function periodsEndingOn(refDate: Date): { period: SummaryPeriod; start: 
 // Mirrors the "Next due" badge math in Settings.tsx (formatNextDue) — kept as
 // a separate small copy here rather than shared, since one is local-calendar
 // display logic for the browser and this is a server-side query input.
-function nextDueDate(dueDay: number, asOf: Date): Date {
+export function nextDueDate(dueDay: number, asOf: Date): Date {
   const clamp = (year: number, month: number) => {
     const lastDay = new Date(year, month + 1, 0).getDate();
     return new Date(year, month, Math.min(dueDay, lastDay));
@@ -103,6 +103,34 @@ async function estimateNextBillAmount(accountId: string, statementDay: number | 
   }
   if (totals.length === 0) return null;
   return totals.reduce((a, b) => a + b, 0) / totals.length;
+}
+
+export interface UpcomingBill {
+  accountId: string;
+  name: string;
+  dueDate: Date;
+  estimate: number | null;
+  currency: string;
+}
+
+/** Tracked credit cards with a due date inside the next `horizonDays`,
+ * soonest first — shared by the weekly email's "bills due" section and the
+ * Dashboard's upcoming-bills card. */
+export async function getUpcomingBills(asOf: Date, horizonDays: number): Promise<UpcomingBill[]> {
+  const cards = await prisma.account.findMany({
+    where: { type: "credit_card", isTracked: true, isClosed: false, dueDay: { not: null } },
+    select: { id: true, name: true, label: true, dueDay: true, statementDay: true, currency: true },
+  });
+  const horizonEnd = new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate() + horizonDays);
+  const upcoming: UpcomingBill[] = [];
+  for (const c of cards) {
+    const dueDate = nextDueDate(c.dueDay!, asOf);
+    if (dueDate > horizonEnd) continue;
+    const estimate = await estimateNextBillAmount(c.id, c.statementDay, asOf);
+    upcoming.push({ accountId: c.id, name: c.label ?? c.name, dueDate, estimate, currency: c.currency });
+  }
+  upcoming.sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
+  return upcoming;
 }
 
 async function resolveRecipients(): Promise<string[]> {
@@ -198,19 +226,7 @@ export async function buildPeriodicSummaryEmail(
   lines.push(`Groceries: ${formatMoney(grocery)}`, "");
 
   if (period === "week") {
-    const cards = await prisma.account.findMany({
-      where: { type: "credit_card", isTracked: true, isClosed: false, dueDay: { not: null } },
-      select: { id: true, name: true, label: true, dueDay: true, statementDay: true, currency: true },
-    });
-    const horizonEnd = new Date(end.getFullYear(), end.getMonth(), end.getDate() + 7);
-    const upcoming: { name: string; dueDate: Date; estimate: number | null; currency: string }[] = [];
-    for (const c of cards) {
-      const dueDate = nextDueDate(c.dueDay!, end);
-      if (dueDate > horizonEnd) continue;
-      const estimate = await estimateNextBillAmount(c.id, c.statementDay, end);
-      upcoming.push({ name: c.label ?? c.name, dueDate, estimate, currency: c.currency });
-    }
-    upcoming.sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
+    const upcoming = await getUpcomingBills(end, 7);
 
     if (upcoming.length > 0) {
       lines.push("Bills due in the next 7 days:");

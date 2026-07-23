@@ -302,6 +302,18 @@ export interface DashboardSummary {
   // alert threshold (currently 10%) — null otherwise, so the frontend can
   // just check truthiness rather than re-deriving the threshold itself.
   netWorthSwing: { assetsPctChange: number | null; liabilitiesPctChange: number | null } | null;
+  // Tracked credit cards with a due date in the next 14 days, soonest first.
+  // Same source/estimate logic as the weekly email's "bills due" section.
+  upcomingBills: UpcomingBillDTO[];
+}
+
+export interface UpcomingBillDTO {
+  accountId: string;
+  name: string;
+  dueDate: string;
+  // Naive average of the last 3 statement cycles' charges — null when there's no charge history yet.
+  estimate: number | null;
+  currency: string;
 }
 
 // ----------------------------------------------------------------------------

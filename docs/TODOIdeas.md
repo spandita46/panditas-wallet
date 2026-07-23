@@ -40,11 +40,11 @@ Recipients: all active `admin`+`adult` users with an email set (not the single `
 
 ### 4. Dashboard calendar highlighting bill due dates
 
-**Status:** Needs your input (design), not started
+**Status:** Done
 
-**Why held back:** you flagged this yourself — *"we need to handle representation to be top notch... couple of bills will fall in same week"*. That's a UX call (calendar widget vs. compact upcoming-bills list vs. dashboard banner) worth deciding deliberately rather than guessing at 1am. Depends on item 3 shipping first and being used for a bit so due-day data actually exists.
+**What shipped:** you picked option (a) — a compact "Bills due in the next 14 days" list card on the Dashboard, not a full calendar grid or a banner. Shows each tracked credit card with a `dueDay` set, soonest-first, with the same naive 3-statement-cycle estimate used by the weekly email (dash shown instead of a guess when there's no charge history yet). Each row deep-links to that account's filtered Transactions view. The due-date/estimate logic was factored out of the weekly email into a shared `getUpcomingBills()` helper (`packages/api/src/periodicSummary.ts`) so both features stay in sync instead of drifting.
 
-**Options to consider when you're back:** (a) a small "next 14 days" list card (simplest, no new library), (b) an actual month-grid calendar component (bigger UI investment), (c) fold into the existing stale/orphan/swing banner pattern on the Dashboard. My default lean is (a) — cheapest, and avoids adding a calendar UI dependency for a family of this size — but it's your call.
+**Verified:** typechecked clean across all three packages; live-tested by temporarily setting a near-term `dueDay` on a real card, confirming the card rendered correctly (both a real dollar estimate and the no-data dash case, sorted correctly), then reverting the test value.
 
 ---
 
@@ -143,5 +143,4 @@ beyond the 4 you explicitly asked for. Worth a quick manual click-through of Set
 next time you're at the keyboard, though nothing tonight suggests an actual bug.
 
 **Not built** (specced above, ready to pick up):
-- Item 4 — dashboard bill-due calendar. Flagged "needs your input" on representation.
-- Item 10 — mobile app. Direction decided (PWA-first); explicitly confirmed lowest priority — last in this backlog.
+- Item 10 — mobile app. Direction decided (PWA-first); explicitly confirmed lowest priority — last in this backlog. Everything else in this backlog is now Done.

@@ -202,6 +202,34 @@ export function DashboardPage() {
             <StatCard label="Liabilities" value={-data.netWorth.liabilities} tone="liability" />
           </section>
 
+          {data.upcomingBills.length > 0 && (
+            <section>
+              <SectionHeader>Bills due in the next 14 days</SectionHeader>
+              <Card padded={false}>
+                <ul className="divide-y divide-slate-100">
+                  {data.upcomingBills.map((b) => (
+                    <li key={b.accountId}>
+                      <Link
+                        to={transactionsLink({ accountId: b.accountId })}
+                        className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-slate-50"
+                      >
+                        <div>
+                          <p className="font-medium text-slate-800">{b.name}</p>
+                          <p className="text-xs text-slate-500">
+                            Due {new Date(b.dueDate).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}
+                          </p>
+                        </div>
+                        <span className="shrink-0 font-medium text-slate-700">
+                          {b.estimate !== null ? `~${formatMoney(b.estimate, b.currency)}` : "—"}
+                        </span>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </Card>
+            </section>
+          )}
+
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <CompositionCard title="Assets breakdown" tone="asset" accountsByType={data.accountsByType} />
             <CompositionCard title="Liabilities breakdown" tone="liability" accountsByType={data.accountsByType} />

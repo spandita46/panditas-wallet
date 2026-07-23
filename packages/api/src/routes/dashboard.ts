@@ -3,6 +3,9 @@ import { isLiability, type AccountDTO, type AccountType, type DashboardSummary }
 import { prisma } from "../db.js";
 import { requireRole } from "../auth.js";
 import { toAccountDTO, toTransactionDTO } from "../mappers.js";
+import { getUpcomingBills } from "../periodicSummary.js";
+
+const UPCOMING_BILLS_HORIZON_DAYS = 14;
 
 const STALE_MS = 1000 * 60 * 60 * 24 * 2; // 2 days
 // How long a tracked account may lag its institution's lastSyncedAt before
@@ -113,6 +116,8 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
     const lastRun = await prisma.syncRun.findFirst({ orderBy: { startedAt: "desc" }, select: { finishedAt: true } });
 
+    const upcomingBills = await getUpcomingBills(new Date(), UPCOMING_BILLS_HORIZON_DAYS);
+
     const summary: DashboardSummary = {
       netWorth: {
         currency: "CAD",
@@ -130,6 +135,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       orphanedAccounts,
       netWorthSwing,
       lastSyncFinishedAt: lastRun?.finishedAt?.toISOString() ?? null,
+      upcomingBills: upcomingBills.map((b) => ({ ...b, dueDate: b.dueDate.toISOString() })),
     };
     return summary;
   });
