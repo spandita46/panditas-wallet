@@ -168,11 +168,36 @@ async function reassignMisroutedRrspContributions(accountId: string, newTxnIds: 
   });
   if (!rrspSibling) return;
 
-  for (const pattern of RRSP_FUND_PAYEE_PATTERNS) {
-    await prisma.transaction.updateMany({
-      where: { id: { in: newTxnIds }, payee: { contains: pattern } },
-      data: { accountId: rrspSibling.id },
-    });
+  const candidates = await prisma.transaction.findMany({
+    where: { id: { in: newTxnIds }, OR: RRSP_FUND_PAYEE_PATTERNS.map((pattern) => ({ payee: { contains: pattern } })) },
+    select: { id: true, externalId: true },
+  });
+  if (candidates.length === 0) return;
+
+  // The feed re-delivers these under the TFSA account on every sync, even
+  // after we've already relocated the original copy — so the RRSP sibling
+  // may already hold a row with this externalId. (accountId, externalId) is
+  // unique, so blindly moving a fresh duplicate into RRSP would throw and
+  // silently abort the rest of the sync. Delete the redundant new copy
+  // instead of moving it whenever that's the case.
+  const candidateExternalIds = candidates.map((c) => c.externalId).filter((id): id is string => !!id);
+  const alreadyInRrsp = new Set(
+    (
+      await prisma.transaction.findMany({
+        where: { accountId: rrspSibling.id, externalId: { in: candidateExternalIds } },
+        select: { externalId: true },
+      })
+    ).map((t) => t.externalId),
+  );
+
+  const toDelete = candidates.filter((c) => c.externalId && alreadyInRrsp.has(c.externalId));
+  const toMove = candidates.filter((c) => !(c.externalId && alreadyInRrsp.has(c.externalId)));
+
+  if (toDelete.length > 0) {
+    await prisma.transaction.deleteMany({ where: { id: { in: toDelete.map((c) => c.id) } } });
+  }
+  if (toMove.length > 0) {
+    await prisma.transaction.updateMany({ where: { id: { in: toMove.map((c) => c.id) } }, data: { accountId: rrspSibling.id } });
   }
 }
 
