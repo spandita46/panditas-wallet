@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { APP_NAME } from "../appName";
+import { NotificationBell } from "./NotificationBell";
 
 export function Layout() {
   const { user, refresh } = useAuth();
@@ -48,6 +49,7 @@ export function Layout() {
             </nav>
           </div>
           <div className="flex items-center gap-3">
+            <NotificationBell />
             <span className="text-sm text-slate-500">{user?.name}</span>
             <button
               onClick={logout}

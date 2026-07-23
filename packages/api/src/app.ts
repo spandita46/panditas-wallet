@@ -10,6 +10,7 @@ import { budgetRoutes } from "./routes/budgets.js";
 import { categoryRoutes } from "./routes/categories.js";
 import { insightsRoutes } from "./routes/insights.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { notificationRoutes } from "./routes/notifications.js";
 import { piggyBankRoutes } from "./routes/piggybank.js";
 import { simplefinRoutes } from "./routes/simplefin.js";
 import { transactionRoutes } from "./routes/transactions.js";
@@ -27,6 +28,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(userRoutes, { prefix: "/api/users" });
   await app.register(accountRoutes, { prefix: "/api/accounts" });
   await app.register(dashboardRoutes, { prefix: "/api/dashboard" });
+  await app.register(notificationRoutes, { prefix: "/api/notifications" });
   await app.register(simplefinRoutes, { prefix: "/api/simplefin" });
   await app.register(transactionRoutes, { prefix: "/api/transactions" });
   await app.register(piggyBankRoutes, { prefix: "/api/piggybank" });

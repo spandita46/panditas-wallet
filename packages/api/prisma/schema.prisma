@@ -229,6 +229,11 @@ enum TxnSource {
   manual
 }
 
+enum BillStatus {
+  full
+  partial
+}
+
 // Who the spend was *for* — distinct from who paid (account owner) and what
 // (category). Enables "who benefited" tracking.
 enum Beneficiary {
@@ -261,6 +266,11 @@ model Transaction {
   // credit card a payment went to, or the account a payment came from).
   transferAccountId String?
   transferAccount   Account?   @relation("TxnTransferAccount", fields: [transferAccountId], references: [id], onDelete: SetNull)
+  // Self-reported, only ever set on a manually-logged credit-card payment —
+  // whether it covered the full statement balance or just a partial paydown.
+  // Null for everything else, including synced payments (we don't try to
+  // infer this from data).
+  billStatus  BillStatus?
   visibility  Visibility @default(shared)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
@@ -447,4 +457,45 @@ model SyncRun {
   finishedAt        DateTime?
 
   @@index([institutionId, startedAt])
+}
+
+// ----------------------------------------------------------------------------
+// In-app notifications (Dashboard banner + bell/drawer)
+// ----------------------------------------------------------------------------
+// One model for every alert type, regardless of what part of the system
+// raised it. Two kinds of notification, both stored the same way:
+//  - "Live condition" types (stale_institution, orphaned_account,
+//    net_worth_swing) are kept in sync with reality on every syncAll() run —
+//    upserted while the condition holds, deleted the moment it no longer
+//    does. subjectId is the institution/account id (or "global" for the
+//    single net-worth-swing slot).
+//  - "One-time event" types (new_account, new_institution) are created
+//    exactly once, at the moment the underlying row is first created during
+//    sync — never regenerated even if deleted, since the event itself only
+//    happens once. subjectId is the new account/institution's own id.
+enum NotificationType {
+  stale_institution
+  orphaned_account
+  net_worth_swing
+  new_account
+  new_institution
+}
+
+model Notification {
+  id     String           @id @default(cuid())
+  type   NotificationType
+  // Institution/account id this notification is about, or "global" for the
+  // single net-worth-swing slot. Combined with type, this is the dedupe key
+  // a live condition upserts against.
+  subjectId String
+  title     String
+  detail    String?
+  createdAt DateTime  @default(now())
+  // Set when dismissed from the Dashboard banner (moves it to the drawer,
+  // still visible there). Deleted outright — not just dismissed again — by
+  // the drawer's "Clear all".
+  dismissedAt DateTime?
+
+  @@unique([type, subjectId])
+  @@index([dismissedAt])
 }

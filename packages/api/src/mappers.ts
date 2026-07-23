@@ -76,5 +76,6 @@ export function toTransactionDTO(
     beneficiaryNote: txn.beneficiaryNote,
     transferAccountId: txn.transferAccountId,
     transferAccountName: txn.transferAccount ? (txn.transferAccount.label ?? txn.transferAccount.name) : null,
+    billStatus: txn.billStatus,
   };
 }

@@ -12,6 +12,15 @@ import {
 } from "./simplefin.js";
 import { notifyConnectionBroken, notifyInstitutionBroken } from "./notifications.js";
 import { computeTrackedNetWorthTotals } from "./netWorth.js";
+import { createOneTimeNotification, syncLiveConditionNotifications } from "./notificationCenter.js";
+
+// A fresh Prisma write sets createdAt and updatedAt to the same instant —
+// the cheapest reliable way to tell "just created" from "existing row
+// updated" out of an upsert without restructuring every call site into
+// separate find/create/update branches.
+function wasJustCreated(row: { createdAt: Date; updatedAt: Date }): boolean {
+  return row.createdAt.getTime() === row.updatedAt.getTime();
+}
 
 type BrokenStatus = "auth_required" | "error";
 interface InstitutionSnapshot {
@@ -44,7 +53,7 @@ export function guessAccountType(orgName: string, accountName: string): AccountT
   return "chequing";
 }
 
-async function upsertAccount(institutionId: string, a: NormalizedAccount): Promise<{ accountId: string; added: number }> {
+async function upsertAccount(institutionId: string, institutionName: string, a: NormalizedAccount): Promise<{ accountId: string; added: number }> {
   const account = await prisma.account.upsert({
     where: { institutionId_externalId: { institutionId, externalId: a.externalId } },
     create: {
@@ -66,6 +75,10 @@ async function upsertAccount(institutionId: string, a: NormalizedAccount): Promi
       lastSyncedAt: new Date(),
     },
   });
+
+  if (wasJustCreated(account)) {
+    await createOneTimeNotification("new_account", account.id, account.name, institutionName);
+  }
 
   await prisma.balanceSnapshot.create({
     data: { accountId: account.id, balance: a.balance, capturedAt: a.balanceDate ?? new Date() },
@@ -306,10 +319,11 @@ export async function syncConnection(connectionId: string): Promise<SyncSummary>
             },
           });
 
+      if (!existing) await createOneTimeNotification("new_institution", institution.id, institution.name, null);
       notifyIfNewlyBroken(beforeById.get(institution.id), institution);
 
       for (const a of org.accounts) {
-        const { added } = await upsertAccount(institution.id, a);
+        const { added } = await upsertAccount(institution.id, institution.name, a);
         summary.accountsUpdated += 1;
         summary.transactionsAdded += added;
       }
@@ -353,6 +367,7 @@ export async function syncConnection(connectionId: string): Promise<SyncSummary>
             },
           });
 
+      if (!existing) await createOneTimeNotification("new_institution", institution.id, institution.name, null);
       notifyIfNewlyBroken(beforeById.get(institution.id), institution);
     }
 
@@ -395,6 +410,7 @@ export async function syncConnection(connectionId: string): Promise<SyncSummary>
               },
             });
 
+        if (!existing) await createOneTimeNotification("new_institution", institution.id, institution.name, null);
         notifyIfNewlyBroken(beforeById.get(institution.id), institution);
       }
     }
@@ -461,6 +477,11 @@ export async function syncAll(): Promise<SyncSummary> {
     // the two most recent rows against.
     const { assets, liabilities } = await computeTrackedNetWorthTotals();
     await prisma.netWorthCheckpoint.create({ data: { assetsTotal: assets, liabilitiesTotal: liabilities } });
+
+    // Re-check the "live condition" alert types (stale/orphaned/swing) against
+    // the state this sync just produced. One-time events (new account/
+    // institution) already fired inline above, at the moment of creation.
+    await syncLiveConditionNotifications();
   } finally {
     syncing = false;
   }

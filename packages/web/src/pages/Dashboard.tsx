@@ -13,7 +13,6 @@ import {
 } from "recharts";
 import {
   formatMoney,
-  SIMPLEFIN_BRIDGE_URL,
   type DailyFlowPoint,
   type DashboardSummary,
 } from "@panditas/shared";
@@ -25,6 +24,8 @@ import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { ChartTooltip } from "../components/ui/ChartTooltip";
 import { flowIntensity } from "../components/ui/chartColors";
 import { CompositionCard } from "../components/dashboard/CompositionCard";
+import { UpcomingBillsCard } from "../components/dashboard/UpcomingBillsCard";
+import { NotificationBanners } from "../components/dashboard/NotificationBanners";
 import { monthEndDate, monthKey, monthLabel, shiftMonth } from "../lib/month";
 import { transactionsLink } from "../lib/transactionsLink";
 
@@ -59,20 +60,6 @@ export function DashboardPage() {
     },
   });
 
-  const acknowledgeAll = useMutation({
-    mutationFn: async () => {
-      if (!data) return;
-      await Promise.all([
-        ...data.newAccounts.map((a) => api.patch(`/accounts/${a.id}`, { acknowledgeNew: true })),
-        ...data.newInstitutions.map((i) => api.patch(`/simplefin/institutions/${i.id}`, { acknowledgeNew: true })),
-      ]);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["simplefin-status"] });
-    },
-  });
-
   const trend = useMemo(() => bucketFlow(timeseries.data ?? [], granularity), [timeseries.data, granularity]);
 
   return (
@@ -100,97 +87,7 @@ export function DashboardPage() {
 
       {data && (
         <div className="space-y-8">
-          {data.staleInstitutions.length > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              <div className="mb-2 flex items-center justify-between">
-                <p>
-                  <strong>{data.staleInstitutions.length}</strong> connection(s) need attention in
-                  SimpleFIN. Balances shown may be stale.
-                </p>
-                <a
-                  href={SIMPLEFIN_BRIDGE_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="shrink-0 whitespace-nowrap font-medium hover:underline"
-                >
-                  Reconnect ↗
-                </a>
-              </div>
-              <ul className="space-y-0.5">
-                {data.staleInstitutions.map((i) => (
-                  <li key={i.id}>
-                    <strong>{i.name}</strong>
-                    {i.statusMessage ? ` — ${i.statusMessage}` : ""}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {(data.newAccounts.length > 0 || data.newInstitutions.length > 0) && (
-            <div className="rounded-xl border border-accent-200 bg-accent-50 p-4 text-sm text-accent-800">
-              <div className="mb-2 flex items-center justify-between">
-                <p>
-                  <strong>{data.newAccounts.length + data.newInstitutions.length}</strong> new account(s)/institution(s)
-                  discovered. Confirm this isn't an unintended duplicate (e.g. from a SimpleFIN reconnect) —
-                  see <Link to="/settings" className="underline">Settings</Link> to merge if it is.
-                </p>
-                <button
-                  onClick={() => acknowledgeAll.mutate()}
-                  disabled={acknowledgeAll.isPending}
-                  className="shrink-0 whitespace-nowrap font-medium hover:underline disabled:opacity-50"
-                >
-                  Acknowledge all
-                </button>
-              </div>
-              <ul className="space-y-0.5">
-                {data.newInstitutions.map((i) => (
-                  <li key={i.id}>
-                    <strong>{i.name}</strong> — new institution
-                  </li>
-                ))}
-                {data.newAccounts.map((a) => (
-                  <li key={a.id}>
-                    <strong>{a.name}</strong> — new account under {a.institutionName}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {data.orphanedAccounts.length > 0 && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              <p className="mb-2">
-                <strong>{data.orphanedAccounts.length}</strong> account(s) stopped receiving updates even though
-                their institution just synced fine — may be a duplicate needing a merge. See{" "}
-                <Link to="/settings" className="underline">Settings</Link>.
-              </p>
-              <ul className="space-y-0.5">
-                {data.orphanedAccounts.map((a) => (
-                  <li key={a.id}>
-                    <strong>{a.name}</strong>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {data.netWorthSwing && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-              {data.netWorthSwing.assetsPctChange !== null && Math.abs(data.netWorthSwing.assetsPctChange) > 10 && (
-                <p>
-                  Assets changed by <strong>{data.netWorthSwing.assetsPctChange.toFixed(1)}%</strong> since the last sync.
-                </p>
-              )}
-              {data.netWorthSwing.liabilitiesPctChange !== null &&
-                Math.abs(data.netWorthSwing.liabilitiesPctChange) > 10 && (
-                  <p>
-                    Liabilities changed by <strong>{data.netWorthSwing.liabilitiesPctChange.toFixed(1)}%</strong> since
-                    the last sync.
-                  </p>
-                )}
-            </div>
-          )}
+          <NotificationBanners notifications={data.notifications} />
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <StatCard
@@ -202,33 +99,7 @@ export function DashboardPage() {
             <StatCard label="Liabilities" value={-data.netWorth.liabilities} tone="liability" />
           </section>
 
-          {data.upcomingBills.length > 0 && (
-            <section>
-              <SectionHeader>Bills due in the next 14 days</SectionHeader>
-              <Card padded={false}>
-                <ul className="divide-y divide-slate-100">
-                  {data.upcomingBills.map((b) => (
-                    <li key={b.accountId}>
-                      <Link
-                        to={transactionsLink({ accountId: b.accountId })}
-                        className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-slate-50"
-                      >
-                        <div>
-                          <p className="font-medium text-slate-800">{b.name}</p>
-                          <p className="text-xs text-slate-500">
-                            Due {new Date(b.dueDate).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}
-                          </p>
-                        </div>
-                        <span className="shrink-0 font-medium text-slate-700">
-                          {b.estimate !== null ? `~${formatMoney(b.estimate, b.currency)}` : "—"}
-                        </span>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </Card>
-            </section>
-          )}
+          <UpcomingBillsCard bills={data.upcomingBills} />
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <CompositionCard title="Assets breakdown" tone="asset" accountsByType={data.accountsByType} />

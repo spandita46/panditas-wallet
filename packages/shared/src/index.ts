@@ -31,6 +31,15 @@ export const BENEFICIARY_LABELS: Record<Beneficiary, string> = {
   external: "External (gift, etc.)",
 };
 
+// Self-reported at manual-entry time — the app never infers this from data
+// (would need the actual statement total, which SimpleFIN doesn't give us).
+export const BILL_STATUSES = ["full", "partial"] as const;
+export type BillStatus = (typeof BILL_STATUSES)[number];
+export const BILL_STATUS_LABELS: Record<BillStatus, string> = {
+  full: "Paid in full",
+  partial: "Partial payment",
+};
+
 // Which account types count as liabilities (owed) vs assets (owned).
 export const LIABILITY_TYPES: AccountType[] = ["credit_card", "loan"];
 export const isLiability = (t: AccountType) => LIABILITY_TYPES.includes(t);
@@ -170,6 +179,8 @@ export interface TransactionDTO {
   // For transfer-kind transactions: the other account involved.
   transferAccountId: string | null;
   transferAccountName: string | null;
+  // Only ever set on a manually-logged credit-card payment (see BillStatus).
+  billStatus: BillStatus | null;
 }
 
 // A suggested (not yet applied) transfer pairing with another transaction —
@@ -182,8 +193,20 @@ export interface TransferSuggestionDTO {
   confidence: number; // 0-100, based on how close the two dates are
 }
 
+// A suggested (not yet applied) match between a manually-logged card payment
+// and a synced transaction that looks like the same real-world payment —
+// same account, close amount, close date. Surfaced for review rather than
+// auto-merged, since a coincidental match isn't impossible.
+export interface DuplicatePaymentSuggestionDTO {
+  candidateTransactionId: string;
+  amount: number;
+  postedAt: string;
+  confidence: number; // 0-100, based on how close the amount/date are
+}
+
 export interface TransactionRowDTO extends TransactionDTO {
   transferSuggestion?: TransferSuggestionDTO | null;
+  duplicatePaymentSuggestion?: DuplicatePaymentSuggestionDTO | null;
 }
 
 export interface TransactionListResponse {
@@ -218,6 +241,19 @@ export const createManualTransactionSchema = z.object({
   categoryId: z.string().optional(),
 });
 export type CreateManualTransactionInput = z.infer<typeof createManualTransactionSchema>;
+
+// Log a credit-card payment the sync hasn't picked up yet. Deliberately
+// separate from createManualTransactionSchema — a fixed shape (always the
+// "Credit Card Payment" category, always linked to a source account) rather
+// than the general-purpose form, plus the self-reported full/partial call.
+export const logCardPaymentSchema = z.object({
+  cardAccountId: z.string().min(1),
+  fromAccountId: z.string().min(1),
+  postedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "postedAt must be YYYY-MM-DD"),
+  amount: z.number().positive(),
+  billStatus: z.enum(BILL_STATUSES),
+});
+export type LogCardPaymentInput = z.infer<typeof logCardPaymentSchema>;
 
 // ----------------------------------------------------------------------------
 // Bulk transaction import (CSV from a bank export)
@@ -285,26 +321,35 @@ export interface DashboardSummary {
   // burning SimpleFIN calls needlessly) and gives a future auto-sync cron a
   // visible "last ran at" signal.
   lastSyncFinishedAt: string | null;
-  staleInstitutions: {
-    id: string;
-    name: string;
-    status: string;
-    statusMessage: string | null;
-    lastSyncedAt: string | null;
-  }[];
-  newAccounts: { id: string; name: string; institutionName: string }[];
-  newInstitutions: { id: string; name: string }[];
-  // Still tracked, but its institution synced fine while this account wasn't
-  // touched — a strong signal it may be a duplicate needing a merge (the
-  // mirror image of a "new account" appearing under the same institution).
-  orphanedAccounts: { id: string; name: string; institutionId: string }[];
-  // Populated only when the swing since the previous sync run exceeds the
-  // alert threshold (currently 10%) — null otherwise, so the frontend can
-  // just check truthiness rather than re-deriving the threshold itself.
-  netWorthSwing: { assetsPctChange: number | null; liabilitiesPctChange: number | null } | null;
+  // Active (undismissed) alerts only — the full history, including dismissed
+  // ones, lives behind the bell icon via GET /notifications.
+  notifications: NotificationDTO[];
   // Tracked credit cards with a due date in the next 14 days, soonest first.
   // Same source/estimate logic as the weekly email's "bills due" section.
   upcomingBills: UpcomingBillDTO[];
+}
+
+// ----------------------------------------------------------------------------
+// In-app notifications
+// ----------------------------------------------------------------------------
+
+export const NOTIFICATION_TYPES = [
+  "stale_institution",
+  "orphaned_account",
+  "net_worth_swing",
+  "new_account",
+  "new_institution",
+] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+export interface NotificationDTO {
+  id: string;
+  type: NotificationType;
+  subjectId: string;
+  title: string;
+  detail: string | null;
+  createdAt: string;
+  dismissedAt: string | null;
 }
 
 export interface UpcomingBillDTO {
@@ -314,6 +359,19 @@ export interface UpcomingBillDTO {
   // Naive average of the last 3 statement cycles' charges — null when there's no charge history yet.
   estimate: number | null;
   currency: string;
+  // Payments found since the last statement closed — not summed, shown as a
+  // list, since more than one unresolved entry usually means a manual entry
+  // and its later-synced counterpart are both still sitting there (see
+  // DuplicatePaymentSuggestionDTO) rather than two genuinely separate payments.
+  payments: BillPaymentDTO[];
+}
+
+export interface BillPaymentDTO {
+  id: string;
+  postedAt: string;
+  amount: number;
+  source: "manual" | "simplefin";
+  billStatus: BillStatus | null;
 }
 
 // ----------------------------------------------------------------------------

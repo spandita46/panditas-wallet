@@ -105,12 +105,36 @@ async function estimateNextBillAmount(accountId: string, statementDay: number | 
   return totals.reduce((a, b) => a + b, 0) / totals.length;
 }
 
+export interface UpcomingBillPayment {
+  id: string;
+  postedAt: Date;
+  amount: number;
+  source: "manual" | "simplefin";
+  billStatus: "full" | "partial" | null;
+}
+
 export interface UpcomingBill {
   accountId: string;
   name: string;
   dueDate: Date;
   estimate: number | null;
   currency: string;
+  payments: UpcomingBillPayment[];
+}
+
+/** Any payment (incoming, linked to a source account) posted to this card
+ * since its last statement closed — ties a mid-cycle-or-early payment to the
+ * bill it's actually paying off, per the household's own payment habits,
+ * rather than assuming it applies to whichever cycle happens to be open now. */
+async function paymentsSinceLastStatement(accountId: string, statementDay: number | null, asOf: Date): Promise<UpcomingBillPayment[]> {
+  const [lastCycle] = statementCycleWindows(statementDay, asOf, 1);
+  const since = lastCycle?.end ?? new Date(0);
+  const payments = await prisma.transaction.findMany({
+    where: { accountId, amount: { gt: 0 }, transferAccountId: { not: null }, postedAt: { gte: since } },
+    select: { id: true, postedAt: true, amount: true, source: true, billStatus: true },
+    orderBy: { postedAt: "asc" },
+  });
+  return payments.map((p) => ({ id: p.id, postedAt: p.postedAt, amount: Number(p.amount), source: p.source, billStatus: p.billStatus }));
 }
 
 /** Tracked credit cards with a due date inside the next `horizonDays`,
@@ -127,7 +151,8 @@ export async function getUpcomingBills(asOf: Date, horizonDays: number): Promise
     const dueDate = nextDueDate(c.dueDay!, asOf);
     if (dueDate > horizonEnd) continue;
     const estimate = await estimateNextBillAmount(c.id, c.statementDay, asOf);
-    upcoming.push({ accountId: c.id, name: c.label ?? c.name, dueDate, estimate, currency: c.currency });
+    const payments = await paymentsSinceLastStatement(c.id, c.statementDay, asOf);
+    upcoming.push({ accountId: c.id, name: c.label ?? c.name, dueDate, estimate, currency: c.currency, payments });
   }
   upcoming.sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
   return upcoming;

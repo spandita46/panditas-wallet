@@ -212,6 +212,17 @@ export function TransactionsPage() {
     onSuccess: invalidate,
   });
 
+  // "Merge" a manually-logged card payment into its later-synced counterpart —
+  // deletes the manual placeholder, keeps the synced (richer) transaction.
+  const mergeDuplicate = useMutation({
+    mutationFn: (id: string) => api.del(`/transactions/${id}`),
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+
   // Create a rule, apply it to the transaction it was created from, then sweep
   // any other uncategorized transactions it now matches.
   const createRule = useMutation({
@@ -487,6 +498,7 @@ export function TransactionsPage() {
             onLinkTransfer={(counterpartTransactionId) =>
               linkTransfer.mutate({ id: t.id, counterpartTransactionId })
             }
+            onMergeDuplicate={() => mergeDuplicate.mutate(t.id)}
           />
         ))}
       </div>
@@ -542,6 +554,7 @@ function TxnRow({
   onSave,
   onCreateRule,
   onLinkTransfer,
+  onMergeDuplicate,
 }: {
   txn: TransactionRowDTO;
   categories: CategoryDTO[];
@@ -553,14 +566,17 @@ function TxnRow({
     txnPatch: Record<string, unknown>,
   ) => void;
   onLinkTransfer: (counterpartTransactionId: string) => void;
+  onMergeDuplicate: () => void;
 }) {
   const [note, setNote] = useState(txn.beneficiaryNote ?? "");
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  const [duplicateDismissed, setDuplicateDismissed] = useState(false);
   const category = categories.find((c) => c.id === txn.categoryId);
   const isTransferKind = category?.kind === "transfer";
   const showSuggestion =
     txn.transferSuggestion && !txn.transferAccountId && !suggestionDismissed;
+  const showDuplicateSuggestion = txn.duplicatePaymentSuggestion && !duplicateDismissed;
 
   return (
     <div className="border-b border-slate-100 bg-white p-3 last:border-0">
@@ -618,6 +634,28 @@ function TxnRow({
               className="rounded-lg bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700"
             >
               Link
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showDuplicateSuggestion && (
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span>
+            Looks like this matches a synced payment of{" "}
+            <strong>{formatMoney(txn.duplicatePaymentSuggestion!.amount)}</strong> on{" "}
+            {new Date(txn.duplicatePaymentSuggestion!.postedAt).toLocaleDateString("en-CA")} (
+            {txn.duplicatePaymentSuggestion!.confidence}% match)
+          </span>
+          <div className="flex shrink-0 gap-3">
+            <button onClick={() => setDuplicateDismissed(true)} className="text-amber-700 underline">
+              Keep both
+            </button>
+            <button
+              onClick={onMergeDuplicate}
+              className="rounded-lg bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-700"
+            >
+              Merge
             </button>
           </div>
         </div>

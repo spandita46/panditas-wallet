@@ -7,7 +7,9 @@ import {
   importCommitSchema,
   importPreviewSchema,
   linkTransferSchema,
+  logCardPaymentSchema,
   tagTransactionSchema,
+  type DuplicatePaymentSuggestionDTO,
   type ImportCommitResponse,
   type ImportPreviewResponse,
   type TransactionListResponse,
@@ -76,7 +78,7 @@ function amountFilter(min?: number, max?: number): Prisma.TransactionWhereInput 
 }
 
 const withRelations = {
-  account: { select: { name: true, label: true } },
+  account: { select: { name: true, label: true, type: true } },
   category: { select: { name: true, kind: true } },
   beneficiaryUser: { select: { name: true } },
   transferAccount: { select: { name: true, label: true } },
@@ -167,6 +169,74 @@ async function computeTransferSuggestions(
       accountName: p.accountName,
       confidence: p.confidence,
     });
+    usedSources.add(p.sourceId);
+    usedCandidates.add(p.candidateId);
+  }
+
+  return result;
+}
+
+/**
+ * Suggest (never apply) a synced counterpart for a manually-logged card
+ * payment that a later sync has probably also picked up for real — same
+ * account, close amount, close date. Unlike computeTransferSuggestions this
+ * is a same-account match (a payment and its own later-synced duplicate),
+ * not a cross-account transfer pairing, so it gets its own pass rather than
+ * reusing that one.
+ */
+async function computeDuplicatePaymentSuggestions(
+  sources: { id: string; accountId: string; amount: Prisma.Decimal; postedAt: Date }[],
+): Promise<Map<string, DuplicatePaymentSuggestionDTO>> {
+  const result = new Map<string, DuplicatePaymentSuggestionDTO>();
+  if (sources.length === 0) return result;
+
+  const times = sources.map((s) => s.postedAt.getTime());
+  const windowStart = new Date(Math.min(...times) - 10 * DAY_MS);
+  const windowEnd = new Date(Math.max(...times) + 10 * DAY_MS);
+
+  const pool = await prisma.transaction.findMany({
+    where: {
+      accountId: { in: [...new Set(sources.map((s) => s.accountId))] },
+      postedAt: { gte: windowStart, lte: windowEnd },
+      amount: { gt: 0 },
+      transferAccountId: { not: null },
+      source: "simplefin",
+    },
+    select: { id: true, accountId: true, amount: true, postedAt: true },
+  });
+
+  interface Pair {
+    sourceId: string;
+    candidateId: string;
+    amount: number;
+    postedAt: Date;
+    confidence: number;
+    diffDays: number;
+  }
+  const pairs: Pair[] = [];
+
+  for (const source of sources) {
+    const sourceAmt = Number(source.amount);
+    for (const cand of pool) {
+      if (cand.accountId !== source.accountId) continue;
+      const candAmt = Number(cand.amount);
+      // Within 2% (min $2) — a manual entry's amount may not match the synced
+      // one to the penny (e.g. a small fee/interest difference).
+      const tolerance = Math.max(2, sourceAmt * 0.02);
+      if (Math.abs(candAmt - sourceAmt) > tolerance) continue;
+      const diffDays = Math.round(Math.abs(source.postedAt.getTime() - cand.postedAt.getTime()) / DAY_MS);
+      const confidence = confidenceForDayGap(diffDays);
+      if (confidence === null) continue;
+      pairs.push({ sourceId: source.id, candidateId: cand.id, amount: candAmt, postedAt: cand.postedAt, confidence, diffDays });
+    }
+  }
+
+  pairs.sort((a, b) => b.confidence - a.confidence || a.diffDays - b.diffDays);
+  const usedSources = new Set<string>();
+  const usedCandidates = new Set<string>();
+  for (const p of pairs) {
+    if (usedSources.has(p.sourceId) || usedCandidates.has(p.candidateId)) continue;
+    result.set(p.sourceId, { candidateTransactionId: p.candidateId, amount: p.amount, postedAt: p.postedAt.toISOString(), confidence: p.confidence });
     usedSources.add(p.sourceId);
     usedCandidates.add(p.candidateId);
   }
@@ -284,8 +354,19 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     );
     const suggestions = await computeTransferSuggestions(eligibleSources);
 
+    // Same idea, but for a manually-logged card payment that a later sync
+    // probably also picked up for real (see computeDuplicatePaymentSuggestions).
+    const manualCardPaymentSources = txns.filter(
+      (t) => t.source === "manual" && t.amount.gt(0) && !!t.transferAccountId && t.account.type === "credit_card",
+    );
+    const duplicateSuggestions = await computeDuplicatePaymentSuggestions(manualCardPaymentSources);
+
     const response: TransactionListResponse = {
-      items: txns.map((t) => ({ ...toTransactionDTO(t), transferSuggestion: suggestions.get(t.id) ?? null })),
+      items: txns.map((t) => ({
+        ...toTransactionDTO(t),
+        transferSuggestion: suggestions.get(t.id) ?? null,
+        duplicatePaymentSuggestion: duplicateSuggestions.get(t.id) ?? null,
+      })),
       total,
     };
     return response;
@@ -327,6 +408,72 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     });
 
     return reply.code(201).send(toTransactionDTO(txn));
+  });
+
+  // Log a credit-card payment the sync hasn't picked up yet (e.g. paid mid-cycle,
+  // sync hasn't run since). Always "Credit Card Payment", always linked to the
+  // account it came from — see logCardPaymentSchema for why this is a separate,
+  // narrower endpoint from POST /manual.
+  app.post("/card-payment", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const parsed = logCardPaymentSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+    const { cardAccountId, fromAccountId, postedAt, amount, billStatus } = parsed.data;
+
+    const [card, from, category] = await Promise.all([
+      prisma.account.findUnique({ where: { id: cardAccountId } }),
+      prisma.account.findUnique({ where: { id: fromAccountId } }),
+      prisma.category.findFirst({ where: { name: "Credit Card Payment" } }),
+    ]);
+    if (!card || card.type !== "credit_card") return reply.code(400).send({ error: "cardAccountId must be a credit card" });
+    if (!from) return reply.code(404).send({ error: "fromAccountId not found" });
+    if (from.type === "credit_card") {
+      return reply.code(400).send({ error: "Paying a card from another card isn't supported" });
+    }
+
+    const [txn, updatedCard] = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          accountId: cardAccountId,
+          postedAt: new Date(`${postedAt}T00:00:00.000Z`),
+          amount,
+          payee: "Payment",
+          categoryId: category?.id ?? null,
+          transferAccountId: fromAccountId,
+          source: "manual",
+          billStatus,
+        },
+        include: withRelations,
+      }),
+      prisma.account.update({ where: { id: cardAccountId }, data: { currentBalance: { increment: amount } } }),
+    ]);
+    await prisma.balanceSnapshot.create({
+      data: { accountId: card.id, balance: updatedCard.currentBalance },
+    });
+
+    return reply.code(201).send(toTransactionDTO(txn));
+  });
+
+  // Undo a manual entry (e.g. after "Merge" resolves it was a duplicate of a
+  // synced transaction). Restricted to source: "manual" — a synced
+  // transaction just reappears on the next sync anyway, so deleting it here
+  // would only cause confusion, not actually remove it from the feed.
+  app.delete("/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const txn = await prisma.transaction.findUnique({ where: { id } });
+    if (!txn) return reply.code(404).send({ error: "Transaction not found" });
+    if (txn.source !== "manual") {
+      return reply.code(400).send({ error: "Only manually-entered transactions can be deleted here" });
+    }
+
+    const [, updatedAccount] = await prisma.$transaction([
+      prisma.transaction.delete({ where: { id } }),
+      prisma.account.update({ where: { id: txn.accountId }, data: { currentBalance: { decrement: txn.amount } } }),
+    ]);
+    await prisma.balanceSnapshot.create({
+      data: { accountId: txn.accountId, balance: updatedAccount.currentBalance },
+    });
+
+    return reply.code(204).send();
   });
 
   // Bulk import (a bank export beyond SimpleFIN's 90-day window). File
