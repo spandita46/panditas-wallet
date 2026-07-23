@@ -230,3 +230,41 @@ Lunch Money's own aggregation, maybe others. I'd want to compare them on reliabi
 institution coverage (a hard requirement given my banks), pricing at my household's scale, and
 how much work migrating off SimpleFIN's data model would actually be. I haven't researched any of
 this yet. It needs its own dedicated pass.
+
+**Research so far (2026-07-23):** SimpleFIN's flakiness isn't just me. It's a documented,
+ecosystem-wide problem: Actual Budget, another self-hosted finance app, has open GitHub issues
+for the same invalid-token errors and connections stuck "upgrading" for weeks. Their Bridge isn't
+open-source either, so self-hosting my way out isn't an option.
+
+Plaid is ruled out. Confirmed by an open GitHub issue on another self-hosted finance project:
+Plaid Link hardcodes region=us and fails at final verification for Canadian Wealthsimple accounts.
+Flinks and Salt Edge are both B2B, sales-gated, with monthly minimums and annual contracts, not
+viable for a household project.
+
+Wealthica looks like the strongest option: Canada's investment-account specialist, 150+
+institutions including Sun Life, Wealthsimple, and Questrade. Real pricing turned out cheaper than
+I'd assumed: Free (3 institutions), Connect $50/yr, Unlimited Connect $75/yr (unlimited accounts,
+family member groups, manual asset tracking, reports), Premium $150/yr, Prestige $250/yr.
+Unlimited Connect at $75/yr is the tier that actually matters for me, not the ~$100 I'd been
+assuming. One real unknown before spending anything: it's not clear from their public pages
+whether that $75/yr personal tier includes actual API/token access I could pull into my own app,
+or whether that requires a separate business API agreement. Needs a direct question to their
+support before I commit to anything.
+
+**One option under consideration: don't switch, split the accounts instead.** Rather than
+replacing SimpleFIN outright, keep credit cards and WealthSimple Cash (high transaction volume,
+manual entry there is genuinely unacceptable) on SimpleFIN as-is, and treat the investment and
+brokerage accounts (Sun Life, Wealthsimple FHSA/TFSA/RESP/Crypto, Questrade) differently, since
+they're low-volume and it's specifically those accounts where SimpleFIN has caused real data bugs
+so far (the Sun Life misrouting mess, and a new one below). Either a monthly manual balance
+sanity-check against each institution's real portal for that subset, or eventually a Wealthica
+connection just for those accounts, since that's exactly their specialty. Nothing decided, just
+the shape of a plan.
+
+**New evidence this needs solving, not just patching (2026-07-23):** found and fixed a real bug
+that's a symptom of exactly this reliability problem. Questrade's SimpleFIN connector was
+replaying a frozen balance from 2025-06-22 on most syncs (87 identical snapshot rows on file), and
+one such replay silently reverted a genuine $1,300 deposit, understating my net worth without any
+transaction to explain it. Added a `balanceAsOf` field on `Account` and a guard in `sync.ts` so a
+sync can never regress a balance backward in time again, but it's another data point for how much
+SimpleFIN's flakiness actually costs beyond just having to click reconnect.
