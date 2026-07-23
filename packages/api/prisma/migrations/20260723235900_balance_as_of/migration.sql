@@ -1,0 +1,1 @@
+ALTER TABLE "Account" ADD COLUMN "balanceAsOf" TIMESTAMP(3);

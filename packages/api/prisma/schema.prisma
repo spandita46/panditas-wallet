@@ -155,6 +155,12 @@ model Account {
   currentBalance Decimal      @default(0) @db.Decimal(14, 2)
   availableBalance Decimal?   @db.Decimal(14, 2)
   creditLimit    Decimal?     @db.Decimal(14, 2)
+  // SimpleFIN's own "balance-date" for currentBalance, when it reports one.
+  // A flaky connector can serve a stale cached response with an older
+  // balance-date than what we already have on file — this lets sync detect
+  // and skip that regression instead of silently overwriting a correct,
+  // more current balance with stale data (see upsertAccount in sync.ts).
+  balanceAsOf    DateTime?
   // Primary owner (e.g. a kid for a piggy bank). Admin assigns ownership.
   ownerUserId    String?
   owner          User?        @relation("AccountOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)

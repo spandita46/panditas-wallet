@@ -54,35 +54,57 @@ export function guessAccountType(orgName: string, accountName: string): AccountT
 }
 
 async function upsertAccount(institutionId: string, institutionName: string, a: NormalizedAccount): Promise<{ accountId: string; added: number }> {
-  const account = await prisma.account.upsert({
+  const existingAccount = await prisma.account.findUnique({
     where: { institutionId_externalId: { institutionId, externalId: a.externalId } },
-    create: {
-      institutionId,
-      externalId: a.externalId,
-      name: a.name,
-      type: guessAccountType(a.orgName, a.name),
-      currency: a.currency,
-      currentBalance: a.balance,
-      availableBalance: a.availableBalance,
-      isManual: false,
-      lastSyncedAt: new Date(),
-    },
-    // On update, do NOT overwrite user-edited name/type.
-    update: {
-      currency: a.currency,
-      currentBalance: a.balance,
-      availableBalance: a.availableBalance,
-      lastSyncedAt: new Date(),
-    },
   });
+
+  // A flaky connector can serve a stale cached response — an older
+  // balance-date than what we already have on file for this account
+  // (observed: Questrade, months-old balance replayed on most syncs). Taking
+  // it at face value would silently regress currentBalance, and net worth
+  // with it, back to out-of-date data. Skip the balance/snapshot write when
+  // that happens; everything else about this sync still runs normally.
+  const isStaleBalance =
+    !!existingAccount?.balanceAsOf && !!a.balanceDate && a.balanceDate < existingAccount.balanceAsOf;
+
+  const account = existingAccount
+    ? await prisma.account.update({
+        where: { id: existingAccount.id },
+        // On update, do NOT overwrite user-edited name/type.
+        data: isStaleBalance
+          ? { lastSyncedAt: new Date() }
+          : {
+              currency: a.currency,
+              currentBalance: a.balance,
+              availableBalance: a.availableBalance,
+              balanceAsOf: a.balanceDate,
+              lastSyncedAt: new Date(),
+            },
+      })
+    : await prisma.account.create({
+        data: {
+          institutionId,
+          externalId: a.externalId,
+          name: a.name,
+          type: guessAccountType(a.orgName, a.name),
+          currency: a.currency,
+          currentBalance: a.balance,
+          availableBalance: a.availableBalance,
+          balanceAsOf: a.balanceDate,
+          isManual: false,
+          lastSyncedAt: new Date(),
+        },
+      });
 
   if (wasJustCreated(account)) {
     await createOneTimeNotification("new_account", account.id, account.name, institutionName);
   }
 
-  await prisma.balanceSnapshot.create({
-    data: { accountId: account.id, balance: a.balance, capturedAt: a.balanceDate ?? new Date() },
-  });
+  if (!isStaleBalance) {
+    await prisma.balanceSnapshot.create({
+      data: { accountId: account.id, balance: a.balance, capturedAt: a.balanceDate ?? new Date() },
+    });
+  }
 
   // Balance/snapshot above stays authoritative either way — this only skips
   // ingesting this account's transaction feed (see schema comment on
