@@ -20,6 +20,10 @@ import { toTransactionDTO } from "../mappers.js";
 
 const listQuerySchema = z.object({
   accountId: z.string().optional(),
+  // Filters to every account under one institution (e.g. "all Wealthsimple
+  // transactions"). Ignored when accountId is also set — a specific account
+  // is the more precise ask.
+  institutionId: z.string().optional(),
   categoryId: z.string().optional(),
   // Comma-separated category ids — for "filter by this whole budget group"
   // deep links. Takes precedence over categoryId/untaggedCategory when set.
@@ -177,6 +181,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) return reply.code(400).send({ error: "Invalid query" });
     const {
       accountId,
+      institutionId,
       categoryId,
       categoryIds,
       untaggedCategory,
@@ -228,7 +233,13 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const where: Prisma.TransactionWhereInput = {
       ...(accountIdList
         ? { accountId: { in: accountIdList } }
-        : { account: { isClosed: false, ...(includeUntracked ? {} : { isTracked: true }) } }),
+        : {
+            account: {
+              isClosed: false,
+              ...(includeUntracked ? {} : { isTracked: true }),
+              ...(institutionId && { institutionId }),
+            },
+          }),
       ...(categoryIdList
         ? { categoryId: { in: categoryIdList } }
         : categoryId

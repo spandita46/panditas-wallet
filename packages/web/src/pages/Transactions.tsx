@@ -37,13 +37,23 @@ function categoryOptgroups(categories: CategoryDTO[]) {
 // Excludes merged accounts — a merged-away account is retired (its history
 // already surfaces through the account it was merged into), so it's never a
 // meaningful target for filtering, a new transaction, or a transfer link.
-function accountOptions(accounts: AccountDTO[], placeholder: string, excludeId?: string): ComboboxItem[] {
+function accountOptions(
+  accounts: AccountDTO[],
+  placeholder: string,
+  excludeId?: string,
+): ComboboxItem[] {
   return [
     { value: "", label: placeholder },
-    ...accounts.filter((a) => a.id !== excludeId && !a.mergedIntoId).map((a) => ({ value: a.id, label: a.displayName })),
+    ...accounts
+      .filter((a) => a.id !== excludeId && !a.mergedIntoId)
+      .map((a) => ({ value: a.id, label: a.displayName })),
   ];
 }
-function categoryPickOptions(categories: CategoryDTO[], placeholder: string, extra: ComboboxItem[] = []): ComboboxItem[] {
+function categoryPickOptions(
+  categories: CategoryDTO[],
+  placeholder: string,
+  extra: ComboboxItem[] = [],
+): ComboboxItem[] {
   return [
     { value: "", label: placeholder },
     ...extra,
@@ -52,8 +62,32 @@ function categoryPickOptions(categories: CategoryDTO[], placeholder: string, ext
     ),
   ];
 }
-function familyOptions(family: FamilyMemberDTO[], placeholder: string): ComboboxItem[] {
-  return [{ value: "", label: placeholder }, ...family.map((f) => ({ value: f.id, label: f.name }))];
+function familyOptions(
+  family: FamilyMemberDTO[],
+  placeholder: string,
+): ComboboxItem[] {
+  return [
+    { value: "", label: placeholder },
+    ...family.map((f) => ({ value: f.id, label: f.name })),
+  ];
+}
+// Manual accounts (Pocket Cash, Coinbase, etc.) have no institution — nothing to group by.
+function institutionOptions(
+  accounts: AccountDTO[],
+  placeholder: string,
+): ComboboxItem[] {
+  const seen = new Map<string, string>();
+  for (const a of accounts) {
+    if (a.institutionId && a.institutionName && !seen.has(a.institutionId)) {
+      seen.set(a.institutionId, a.institutionName);
+    }
+  }
+  return [
+    { value: "", label: placeholder },
+    ...[...seen.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]))
+      .map(([value, label]) => ({ value, label })),
+  ];
 }
 
 type DatePreset = "all" | "this_month" | "last_month" | "custom";
@@ -75,13 +109,26 @@ export function TransactionsPage() {
   // Seeded once from the URL — lets Dashboard/Budget deep-link into a
   // pre-filtered view (e.g. a calendar day, a credit card, a budget category).
   const [searchParams] = useSearchParams();
-  const initialGroupIds = (searchParams.get("categoryIds") ?? "").split(",").filter(Boolean);
+  const initialGroupIds = (searchParams.get("categoryIds") ?? "")
+    .split(",")
+    .filter(Boolean);
 
-  const [accountId, setAccountId] = useState(() => searchParams.get("accountId") ?? "");
-  const [categoryFilter, setCategoryFilter] = useState(() => searchParams.get("categoryId") ?? ""); // "", "__uncategorized__", or a categoryId
-  const [categoryGroup, setCategoryGroup] = useState<{ ids: string[]; label: string } | null>(() =>
+  const [accountId, setAccountId] = useState(
+    () => searchParams.get("accountId") ?? "",
+  );
+  const [institutionId, setInstitutionId] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState(
+    () => searchParams.get("categoryId") ?? "",
+  ); // "", "__uncategorized__", or a categoryId
+  const [categoryGroup, setCategoryGroup] = useState<{
+    ids: string[];
+    label: string;
+  } | null>(() =>
     initialGroupIds.length > 0
-      ? { ids: initialGroupIds, label: searchParams.get("groupLabel") ?? "Selected categories" }
+      ? {
+          ids: initialGroupIds,
+          label: searchParams.get("groupLabel") ?? "Selected categories",
+        }
       : null,
   );
   const [beneficiaryFilter, setBeneficiaryFilter] = useState(""); // "", "__untagged__", or a Beneficiary
@@ -89,7 +136,9 @@ export function TransactionsPage() {
   const [datePreset, setDatePreset] = useState<DatePreset>(() =>
     searchParams.get("from") || searchParams.get("to") ? "custom" : "all",
   );
-  const [fromDate, setFromDate] = useState(() => searchParams.get("from") ?? "");
+  const [fromDate, setFromDate] = useState(
+    () => searchParams.get("from") ?? "",
+  );
   const [toDate, setToDate] = useState(() => searchParams.get("to") ?? "");
   const [minAmount, setMinAmount] = useState("");
   const [maxAmount, setMaxAmount] = useState("");
@@ -113,8 +162,10 @@ export function TransactionsPage() {
 
   const params = new URLSearchParams();
   if (accountId) params.set("accountId", accountId);
+  else if (institutionId) params.set("institutionId", institutionId);
   if (categoryGroup) params.set("categoryIds", categoryGroup.ids.join(","));
-  else if (categoryFilter === "__uncategorized__") params.set("untaggedCategory", "1");
+  else if (categoryFilter === "__uncategorized__")
+    params.set("untaggedCategory", "1");
   else if (categoryFilter) params.set("categoryId", categoryFilter);
   if (beneficiaryFilter === "__untagged__")
     params.set("untaggedBeneficiary", "1");
@@ -184,8 +235,14 @@ export function TransactionsPage() {
   });
 
   const createManualTxn = useMutation({
-    mutationFn: (v: { accountId: string; postedAt: string; amount: number; payee?: string; description?: string; categoryId?: string }) =>
-      api.post("/transactions/manual", v),
+    mutationFn: (v: {
+      accountId: string;
+      postedAt: string;
+      amount: number;
+      payee?: string;
+      description?: string;
+      categoryId?: string;
+    }) => api.post("/transactions/manual", v),
     onSuccess: () => {
       setShowAddTxn(false);
       invalidate();
@@ -246,14 +303,29 @@ export function TransactionsPage() {
       <div className="card space-y-3 p-3">
         <div className="flex flex-wrap gap-2">
           <Combobox
-            options={accountOptions(accounts.data ?? [], "All accounts")}
-            value={accountId}
+            options={institutionOptions(
+              accounts.data ?? [],
+              "All institutions",
+            )}
+            value={institutionId}
             onChange={(v) => {
-              setAccountId(v);
+              setInstitutionId(v);
+              if (v) setAccountId("");
               setPage(0);
             }}
             className="max-w-[12rem]"
           />
+          <Combobox
+            options={accountOptions(accounts.data ?? [], "All accounts")}
+            value={accountId}
+            onChange={(v) => {
+              setAccountId(v);
+              if (v) setInstitutionId("");
+              setPage(0);
+            }}
+            className="max-w-[12rem]"
+          />
+
           {categoryGroup ? (
             <span className="inline-flex max-w-[16rem] items-center gap-1.5 rounded-lg bg-accent-50 px-3 py-2 text-sm text-accent-800 ring-1 ring-accent-200">
               Group: <strong className="truncate">{categoryGroup.label}</strong>
@@ -270,9 +342,11 @@ export function TransactionsPage() {
             </span>
           ) : (
             <Combobox
-              options={categoryPickOptions(categories.data ?? [], "All categories", [
-                { value: "__uncategorized__", label: "Uncategorized" },
-              ])}
+              options={categoryPickOptions(
+                categories.data ?? [],
+                "All categories",
+                [{ value: "__uncategorized__", label: "Uncategorized" }],
+              )}
               value={categoryFilter}
               onChange={(v) => {
                 setCategoryFilter(v);
@@ -285,7 +359,10 @@ export function TransactionsPage() {
             options={[
               { value: "", label: "Anyone / anything" },
               { value: "__untagged__", label: "Untagged" },
-              ...BENEFICIARIES.map((b) => ({ value: b, label: BENEFICIARY_LABELS[b] })),
+              ...BENEFICIARIES.map((b) => ({
+                value: b,
+                label: BENEFICIARY_LABELS[b],
+              })),
             ]}
             value={beneficiaryFilter}
             onChange={(v) => {
@@ -482,7 +559,8 @@ function TxnRow({
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const category = categories.find((c) => c.id === txn.categoryId);
   const isTransferKind = category?.kind === "transfer";
-  const showSuggestion = txn.transferSuggestion && !txn.transferAccountId && !suggestionDismissed;
+  const showSuggestion =
+    txn.transferSuggestion && !txn.transferAccountId && !suggestionDismissed;
 
   return (
     <div className="border-b border-slate-100 bg-white p-3 last:border-0">
@@ -522,15 +600,21 @@ function TxnRow({
       {showSuggestion && (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
           <span>
-            Looks like a transfer with <strong>{txn.transferSuggestion!.accountName}</strong> (
+            Looks like a transfer with{" "}
+            <strong>{txn.transferSuggestion!.accountName}</strong> (
             {txn.transferSuggestion!.confidence}% match)
           </span>
           <div className="flex shrink-0 gap-3">
-            <button onClick={() => setSuggestionDismissed(true)} className="text-blue-700 underline">
+            <button
+              onClick={() => setSuggestionDismissed(true)}
+              className="text-blue-700 underline"
+            >
               Dismiss
             </button>
             <button
-              onClick={() => onLinkTransfer(txn.transferSuggestion!.candidateTransactionId)}
+              onClick={() =>
+                onLinkTransfer(txn.transferSuggestion!.candidateTransactionId)
+              }
               className="rounded-lg bg-blue-600 px-2 py-1 font-medium text-white hover:bg-blue-700"
             >
               Link
@@ -564,10 +648,15 @@ function TxnRow({
         <Combobox
           options={[
             { value: "", label: "Who was it for?" },
-            ...BENEFICIARIES.map((b) => ({ value: b, label: BENEFICIARY_LABELS[b] })),
+            ...BENEFICIARIES.map((b) => ({
+              value: b,
+              label: BENEFICIARY_LABELS[b],
+            })),
           ]}
           value={txn.beneficiary ?? ""}
-          onChange={(v) => onSave({ beneficiary: (v || null) as Beneficiary | null })}
+          onChange={(v) =>
+            onSave({ beneficiary: (v || null) as Beneficiary | null })
+          }
           className="w-36"
           inputClassName="rounded-lg border border-slate-300 px-2 py-1 text-xs"
         />
@@ -657,9 +746,9 @@ function CreateRuleForm({
     txnPatch: Record<string, unknown>,
   ) => void;
 }) {
-  const [matchType, setMatchType] = useState<Exclude<RuleConditionType, "amount_range">>(
-    txn.payee ? "payee_contains" : "account",
-  );
+  const [matchType, setMatchType] = useState<
+    Exclude<RuleConditionType, "amount_range">
+  >(txn.payee ? "payee_contains" : "account");
   const [pattern, setPattern] = useState(txn.payee ?? "");
   const [categoryId, setCategoryId] = useState(txn.categoryId ?? "");
   const [linkedAccountId, setLinkedAccountId] = useState(
@@ -699,7 +788,11 @@ function CreateRuleForm({
       <div className="flex flex-wrap items-center gap-2">
         <select
           value={matchType}
-          onChange={(e) => setMatchType(e.target.value as Exclude<RuleConditionType, "amount_range">)}
+          onChange={(e) =>
+            setMatchType(
+              e.target.value as Exclude<RuleConditionType, "amount_range">,
+            )
+          }
           className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
         >
           <option value="account">This account ({txn.accountName})</option>
@@ -722,7 +815,11 @@ function CreateRuleForm({
           inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
         />
         <Combobox
-          options={accountOptions(accounts, "Links to account… (optional)", txn.accountId)}
+          options={accountOptions(
+            accounts,
+            "Links to account… (optional)",
+            txn.accountId,
+          )}
           value={linkedAccountId}
           onChange={setLinkedAccountId}
           className="w-48"
@@ -758,7 +855,14 @@ function AddTransactionForm({
   accounts: AccountDTO[];
   categories: CategoryDTO[];
   busy: boolean;
-  onSubmit: (v: { accountId: string; postedAt: string; amount: number; payee?: string; description?: string; categoryId?: string }) => void;
+  onSubmit: (v: {
+    accountId: string;
+    postedAt: string;
+    amount: number;
+    payee?: string;
+    description?: string;
+    categoryId?: string;
+  }) => void;
 }) {
   const [accountId, setAccountId] = useState("");
   const [direction, setDirection] = useState<"in" | "out">("out");
