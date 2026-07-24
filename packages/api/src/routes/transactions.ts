@@ -5,6 +5,7 @@ import {
   BENEFICIARIES,
   createManualTransactionSchema,
   createTransferSchema,
+  editManualTransactionSchema,
   importCommitSchema,
   importPreviewSchema,
   linkTransferSchema,
@@ -539,6 +540,55 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     });
 
     return reply.code(204).send();
+  });
+
+  // Correct a manual entry in place (wrong amount, date, payee) instead of
+  // delete-and-recreate. Restricted to source: "manual", same reasoning as
+  // DELETE above. Doesn't support editing a transfer leg's amount — the two
+  // legs have to stay mirrored, and updating just one here would leave them
+  // out of sync; delete and re-add both legs for that case instead.
+  app.patch("/:id/edit", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = editManualTransactionSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+
+    const existing = await prisma.transaction.findUnique({ where: { id } });
+    if (!existing) return reply.code(404).send({ error: "Transaction not found" });
+    if (existing.source !== "manual") {
+      return reply.code(400).send({ error: "Only manually-entered transactions can be edited here" });
+    }
+    const { postedAt, amount, payee, description, categoryId } = parsed.data;
+    if (amount !== undefined && existing.transferAccountId) {
+      return reply
+        .code(400)
+        .send({ error: "Editing the amount of a transfer isn't supported — delete and re-add both legs instead" });
+    }
+
+    const data: Prisma.TransactionUpdateInput = {
+      ...(postedAt !== undefined && { postedAt: new Date(`${postedAt}T00:00:00.000Z`) }),
+      ...(amount !== undefined && { amount }),
+      ...(payee !== undefined && { payee }),
+      ...(description !== undefined && { description }),
+      ...(categoryId !== undefined && { categoryId }),
+    };
+
+    const amountChanged = amount !== undefined && Number(amount) !== Number(existing.amount);
+    let txn;
+    if (amountChanged) {
+      const delta = Number(amount) - Number(existing.amount);
+      const [updated, updatedAccount] = await prisma.$transaction([
+        prisma.transaction.update({ where: { id }, data, include: withRelations }),
+        prisma.account.update({ where: { id: existing.accountId }, data: { currentBalance: { increment: delta } } }),
+      ]);
+      await prisma.balanceSnapshot.create({
+        data: { accountId: existing.accountId, balance: updatedAccount.currentBalance },
+      });
+      txn = updated;
+    } else {
+      txn = await prisma.transaction.update({ where: { id }, data, include: withRelations });
+    }
+
+    return toTransactionDTO(txn);
   });
 
   // Bulk import (a bank export beyond SimpleFIN's 90-day window). File

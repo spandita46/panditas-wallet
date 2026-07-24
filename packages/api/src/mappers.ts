@@ -68,6 +68,7 @@ export function toTransactionDTO(
     payee: txn.payee,
     description: txn.description,
     pending: txn.pending,
+    source: txn.source,
     categoryId: txn.categoryId,
     categoryName: txn.category?.name ?? null,
     beneficiary: (txn.beneficiary as Beneficiary | null) ?? null,

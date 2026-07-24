@@ -161,6 +161,8 @@ export interface AccountDTO {
   suppressTransactionSync: boolean;
 }
 
+export type TxnSource = "simplefin" | "manual";
+
 export interface TransactionDTO {
   id: string;
   accountId: string;
@@ -170,6 +172,9 @@ export interface TransactionDTO {
   payee: string | null;
   description: string | null;
   pending: boolean;
+  // "manual" transactions can be edited/deleted directly; synced ones can't
+  // (they'd just reappear on the next sync).
+  source: TxnSource;
   categoryId: string | null;
   categoryName: string | null;
   beneficiary: Beneficiary | null;
@@ -244,6 +249,20 @@ export const createManualTransactionSchema = z.object({
   confirmDuplicate: z.boolean().optional(),
 });
 export type CreateManualTransactionInput = z.infer<typeof createManualTransactionSchema>;
+
+// Correct a manual entry in place (wrong amount, date, payee) instead of
+// delete-and-recreate. Account can't be changed here — moving a transaction
+// to a different account is a bigger operation (balance math on two
+// accounts) than fixing a typo. Every field optional so the caller only
+// sends what actually changed.
+export const editManualTransactionSchema = z.object({
+  postedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "postedAt must be YYYY-MM-DD").optional(),
+  amount: z.number().refine((n) => n !== 0, "amount must not be 0").optional(),
+  payee: z.string().max(200).nullable().optional(),
+  description: z.string().max(500).nullable().optional(),
+  categoryId: z.string().nullable().optional(),
+});
+export type EditManualTransactionInput = z.infer<typeof editManualTransactionSchema>;
 
 // One transaction that touches two accounts: a transfer, or its special
 // case, a credit card payment (billStatus is only meaningful when the
