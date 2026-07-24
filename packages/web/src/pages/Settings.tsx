@@ -38,6 +38,29 @@ function formatNextDue(dueDay: number): string {
   return next.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// Groups accounts by institution for a scannable list (10 institutions, 24
+// accounts adds up fast as a flat list). Manual accounts (no institution)
+// get their own trailing group, matching the no-institution handling in
+// Transactions' institution filter.
+function groupByInstitution(accounts: AccountDTO[]): { label: string; accounts: AccountDTO[] }[] {
+  const byInstitution = new Map<string, AccountDTO[]>();
+  const manual: AccountDTO[] = [];
+  for (const a of accounts) {
+    if (!a.institutionName) {
+      manual.push(a);
+      continue;
+    }
+    const group = byInstitution.get(a.institutionName);
+    if (group) group.push(a);
+    else byInstitution.set(a.institutionName, [a]);
+  }
+  const groups = [...byInstitution.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([label, accts]) => ({ label, accounts: accts }));
+  if (manual.length > 0) groups.push({ label: "Manual", accounts: manual });
+  return groups;
+}
+
 const TYPE_LABELS: Record<AccountType, string> = {
   chequing: "Chequing",
   savings: "Savings",
@@ -152,6 +175,15 @@ export function SettingsPage() {
     onSuccess: invalidate,
   });
 
+  const dropAccount = useMutation({
+    mutationFn: (id: string) => api.post(`/accounts/${id}/drop`),
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    },
+    onError: (err) => setMessage(err instanceof ApiError ? err.message : "Couldn't drop account"),
+  });
+
   const createManualAccount = useMutation({
     mutationFn: (v: { name: string; type: AccountType; currency: string; currentBalance: number; ownerUserId: string | null }) =>
       // Backend schema uses `.optional()` (no `.nullable()`) for ownerUserId —
@@ -175,6 +207,7 @@ export function SettingsPage() {
   const mergedAccounts = accounts.data?.filter((a) => a.mergedIntoId) ?? [];
   const visibleAccounts =
     accountTab === "active" ? activeAccounts : accountTab === "untracked" ? untrackedAccounts : mergedAccounts;
+  const groupedAccounts = groupByInstitution(visibleAccounts);
 
   return (
     <div className="space-y-10">
@@ -329,22 +362,38 @@ export function SettingsPage() {
           {visibleAccounts.length === 0 && (
             <p className="p-4 text-sm text-slate-500">No accounts here.</p>
           )}
-          {visibleAccounts.map((a) => (
-            <AccountRow
-              key={a.id}
-              account={a}
-              allAccounts={accounts.data ?? []}
-              users={users.data ?? []}
-              onLabel={(label) => setLabel.mutate({ id: a.id, label })}
-              onType={(type) => setType.mutate({ id: a.id, type })}
-              onTracked={(isTracked) => setTracked.mutate({ id: a.id, isTracked })}
-              onOwner={(ownerUserId) => setOwner.mutate({ id: a.id, ownerUserId })}
-              onAcknowledgeNew={() => acknowledgeAccount.mutate(a.id)}
-              onMerge={(intoAccountId) => mergeAccount.mutate({ id: a.id, intoAccountId })}
-              onUnmerge={() => unmergeAccount.mutate(a.id)}
-              onBillDates={(v) => setBillDates.mutate({ id: a.id, ...v })}
-              onSuppressTransactionSync={(v) => setSuppressTransactionSync.mutate({ id: a.id, suppressTransactionSync: v })}
-            />
+          {groupedAccounts.map((group) => (
+            <div key={group.label}>
+              <p className="border-b border-slate-100 bg-slate-50 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                {group.label}
+              </p>
+              {group.accounts.map((a) => (
+                <AccountRow
+                  key={a.id}
+                  account={a}
+                  allAccounts={accounts.data ?? []}
+                  users={users.data ?? []}
+                  onLabel={(label) => setLabel.mutate({ id: a.id, label })}
+                  onType={(type) => setType.mutate({ id: a.id, type })}
+                  onTracked={(isTracked) => setTracked.mutate({ id: a.id, isTracked })}
+                  onOwner={(ownerUserId) => setOwner.mutate({ id: a.id, ownerUserId })}
+                  onAcknowledgeNew={() => acknowledgeAccount.mutate(a.id)}
+                  onMerge={(intoAccountId) => mergeAccount.mutate({ id: a.id, intoAccountId })}
+                  onUnmerge={() => unmergeAccount.mutate(a.id)}
+                  onDrop={() => {
+                    if (
+                      window.confirm(
+                        `Permanently delete "${a.displayName}"? Its transactions will move to ${a.mergedIntoName}. This can't be undone.`,
+                      )
+                    ) {
+                      dropAccount.mutate(a.id);
+                    }
+                  }}
+                  onBillDates={(v) => setBillDates.mutate({ id: a.id, ...v })}
+                  onSuppressTransactionSync={(v) => setSuppressTransactionSync.mutate({ id: a.id, suppressTransactionSync: v })}
+                />
+              ))}
+            </div>
           ))}
         </div>
       </section>
@@ -363,6 +412,7 @@ function AccountRow({
   onAcknowledgeNew,
   onMerge,
   onUnmerge,
+  onDrop,
   onBillDates,
   onSuppressTransactionSync,
 }: {
@@ -376,6 +426,7 @@ function AccountRow({
   onAcknowledgeNew: () => void;
   onMerge: (intoAccountId: string) => void;
   onUnmerge: () => void;
+  onDrop: () => void;
   onBillDates: (v: { statementDay: number | null; dueDay: number | null }) => void;
   onSuppressTransactionSync: (v: boolean) => void;
 }) {
@@ -461,12 +512,21 @@ function AccountRow({
           </button>
         )}
         {merged ? (
-          <button
-            onClick={onUnmerge}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
-          >
-            Unmerge
-          </button>
+          <>
+            <button
+              onClick={onUnmerge}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100"
+            >
+              Unmerge
+            </button>
+            <button
+              onClick={onDrop}
+              title="Permanently delete this account and move its transactions to the account it's merged into"
+              className="rounded-lg border border-rose-300 px-3 py-1.5 text-xs text-rose-600 hover:bg-rose-50"
+            >
+              Drop permanently
+            </button>
+          </>
         ) : (
           <>
             <Combobox

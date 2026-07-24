@@ -175,6 +175,39 @@ export async function accountRoutes(app: FastifyInstance): Promise<void> {
     return toAccountDTO(account);
   });
 
+  // Permanently delete a merged (leaf) account, moving its transactions to
+  // the account it was merged into. A SimpleFIN reconnect that fixes a
+  // broken connection mints a new account id every time, so merged leaves
+  // accumulate forever with no way to actually clear them out — this is that
+  // escape valve. Deliberately a separate, later step from merging itself
+  // (which stays soft/reversible via unmerge): only ever available on an
+  // already-merged account, enforced here, not just hidden in the UI.
+  app.post("/:id/drop", { preHandler: requireRole("admin") }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const existing = await prisma.account.findUnique({ where: { id } });
+    if (!existing) return reply.code(404).send({ error: "Account not found" });
+    if (!existing.mergedIntoId) {
+      return reply.code(400).send({ error: "Only an already-merged account can be dropped" });
+    }
+    const targetId = existing.mergedIntoId;
+
+    await prisma.$transaction(async (tx) => {
+      // Auto-tag/auto-link rule conditions are already repointed to the
+      // target at merge time (see /:id/merge) — only the transaction ledger
+      // and per-account records still point at the soon-to-be-deleted id.
+      await tx.transaction.updateMany({ where: { accountId: id }, data: { accountId: targetId } });
+      await tx.contribution.updateMany({ where: { accountId: id }, data: { accountId: targetId } });
+      await tx.goal.updateMany({ where: { accountId: id }, data: { accountId: targetId } });
+      // Everything else attached to this id cascades away on delete:
+      // BalanceSnapshot (its balance history isn't meaningful once merged),
+      // AccountUser (access grants), and any other transaction's
+      // transferAccountId pointing here (SetNull — display just goes blank).
+      await tx.account.delete({ where: { id } });
+    });
+
+    return reply.code(204).send();
+  });
+
   // Balance-over-time for one account, from captured snapshots (every sync +
   // manual balance edit) — powers the Dashboard composition drill-down.
   // Resolves to the whole merge group (root + any leaves merged into it) for

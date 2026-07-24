@@ -228,7 +228,8 @@ surfaces matter most to me (the kids on the piggy-bank views, screen reader supp
 
 ### 16. Upstream data source alternative to SimpleFIN
 
-**Status:** Idea (not scoped), real pain point, no decision yet
+**Status:** Folder sync is planned (not started); whether I drop SimpleFIN entirely is still
+open, revisiting after a trial period (see below)
 
 **The problem:** my SimpleFIN connections drop constantly. I've had to re-authenticate multiple
 institutions on consecutive days, even ones I'd just reconnected the day before. This is a real
@@ -280,3 +281,41 @@ one such replay silently reverted a genuine $1,300 deposit, understating my net 
 transaction to explain it. Added a `balanceAsOf` field on `Account` and a guard in `sync.ts` so a
 sync can never regress a balance backward in time again, but it's another data point for how much
 SimpleFIN's flakiness actually costs beyond just having to click reconnect.
+
+**More flakiness, and a decision (2026-07-24):** the next day, 9 of 10 institutions went into
+auth_required at once, and the same evening I found two more real data bugs from the sync (a
+leftover Sun Life duplicate from a crash that happened just before that session's fix landed, and
+the same Questrade balance regressing a second time from a gap in my own guard). That's what
+pushed me to seriously consider dropping SimpleFIN altogether. I decided against a hard cutover
+for now: I'm giving it another one to two weeks of real use, and if the reconnect grind keeps
+happening at this rate, it's genuinely not worth it. If it settles down, the account-split idea
+above (SimpleFIN for high-volume accounts, something else for the low-volume investment ones)
+is still the most likely landing spot.
+
+In parallel, I designed the fallback I'd actually want either way: a folder-sync import. I drop
+a bank export into a folder on the home server and click scan, instead of hand-configuring a
+column mapping every time. This isn't the manual data-entry I ruled out above (I'm still not
+retyping transactions by hand), it's automating the part of manual CSV import that's actually
+tedious, and it also solves a gap plain CSV import can't: a few of my institutions only ever give
+me a PDF statement or an Excel export, never CSV.
+
+**Decision: an LLM-powered import agent, not a rigid deterministic parser.** A plain "brittle
+cron job" style column-mapper falls over exactly where I need it most, PDF bank statements are
+inconsistent (multi-column layouts, running balance mixed into the rows, page breaks), and I'd be
+hand-writing a parser per institution per file format. Claude reads PDF and Excel natively, so one
+agent handles CSV, XLSX, and PDF without three separate codepaths. To keep cost and risk down: CSV
+gets a fingerprint cache keyed on the header row, so a format I've already seen gets parsed
+deterministically without calling the agent again, and the agent only runs on genuinely new or
+changed formats. XLSX and PDF always go through the agent (harder to fingerprint reliably, and
+lower volume, so not worth caching in v1). Nothing ever auto-commits, everything lands in the same
+staged, duplicate-flagged review screen my existing manual CSV import already uses, before it
+becomes a real transaction. If the agent call ever fails, a CSV file still falls back to that
+existing manual-mapping flow untouched, XLSX and PDF don't have that fallback in v1, which I'm
+accepting for now. Cadence is deliberately not fixed either, a manual "scan folder" button for
+v1, no cron and no live file-watcher, since some institutions I'd want weekly and others monthly
+and I don't want to commit to one schedule yet.
+
+Full implementation plan is designed (data model, backend structure, the two agent tool-call
+schemas, API routes, and a phased build order) and approved. Not built yet, next up whenever I
+come back to it, and needs an Anthropic API key plus a real folder path on the home server before
+I can start.
