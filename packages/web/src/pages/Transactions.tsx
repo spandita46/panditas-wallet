@@ -4,19 +4,23 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BENEFICIARIES,
   BENEFICIARY_LABELS,
+  BILL_STATUSES,
+  BILL_STATUS_LABELS,
   CATEGORY_KIND_LABELS,
   formatMoney,
   type AccountDTO,
   type Beneficiary,
+  type BillStatus,
   type CategoryDTO,
   type CreateCategoryRuleInput,
+  type DuplicateCandidateDTO,
   type FamilyMemberDTO,
   type RuleConditionType,
   type TransactionDTO,
   type TransactionListResponse,
   type TransactionRowDTO,
 } from "@panditas/shared";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import { Combobox, type ComboboxItem } from "../components/ui/Combobox";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 
@@ -90,6 +94,46 @@ function institutionOptions(
   ];
 }
 
+// A single entry (expense/income on one account) or a transfer (touches two
+// accounts — a card payment is just a transfer whose destination happens to
+// be a credit card). "Clone" seeds these from an existing row; a fresh "+ Add
+// transaction" click starts from an empty one of whichever mode was open.
+interface ExpenseFormValues {
+  accountId: string;
+  amount: number; // signed: negative = money out, positive = money in
+  payee?: string;
+  categoryId?: string;
+}
+interface TransferFormValues {
+  fromAccountId: string;
+  toAccountId: string;
+  amount: number; // positive magnitude
+  billStatus?: BillStatus;
+}
+type AddTxnSeed =
+  | ({ mode: "expense" } & Partial<ExpenseFormValues>)
+  | ({ mode: "transfer" } & Partial<TransferFormValues>);
+type AddTxnSubmitValues =
+  | ({ mode: "expense"; postedAt: string } & ExpenseFormValues)
+  | ({ mode: "transfer"; postedAt: string } & TransferFormValues);
+
+/** Turn an existing row into a starting point for a new entry — always dated today. */
+function cloneSeedFromTxn(txn: TransactionRowDTO): AddTxnSeed {
+  if (txn.transferAccountId) {
+    const amount = Math.abs(txn.amount);
+    return txn.amount < 0
+      ? { mode: "transfer", fromAccountId: txn.accountId, toAccountId: txn.transferAccountId, amount }
+      : { mode: "transfer", fromAccountId: txn.transferAccountId, toAccountId: txn.accountId, amount };
+  }
+  return {
+    mode: "expense",
+    accountId: txn.accountId,
+    amount: txn.amount,
+    payee: txn.payee ?? undefined,
+    categoryId: txn.categoryId ?? undefined,
+  };
+}
+
 type DatePreset = "all" | "this_month" | "last_month" | "custom";
 
 function monthKey(d: Date): string {
@@ -146,6 +190,13 @@ export function TransactionsPage() {
   const [page, setPage] = useState(0);
   const [ruleMessage, setRuleMessage] = useState<string | null>(null);
   const [showAddTxn, setShowAddTxn] = useState(false);
+  const [addTxnSeed, setAddTxnSeed] = useState<AddTxnSeed | null>(null);
+  // Bumped on Clone/reset so AddTransactionForm remounts with fresh initial state.
+  const [addTxnKey, setAddTxnKey] = useState(0);
+  const [duplicateWarning, setDuplicateWarning] = useState<{
+    candidates: DuplicateCandidateDTO[];
+    retry: () => void;
+  } | null>(null);
 
   const accounts = useQuery({
     queryKey: ["accounts"],
@@ -245,22 +296,58 @@ export function TransactionsPage() {
     },
   });
 
+  // A 409 here means findDuplicateCandidate flagged a likely re-entry — warn,
+  // don't block, and let the user resubmit with confirmDuplicate: true.
+  function onAddTxnError(err: unknown, retryWith: () => void) {
+    if (err instanceof ApiError && err.status === 409) {
+      const body = err.body as { candidates?: DuplicateCandidateDTO[] } | undefined;
+      setDuplicateWarning({ candidates: body?.candidates ?? [], retry: retryWith });
+    }
+  }
+
   const createManualTxn = useMutation({
-    mutationFn: (v: {
-      accountId: string;
-      postedAt: string;
-      amount: number;
-      payee?: string;
-      description?: string;
-      categoryId?: string;
-    }) => api.post("/transactions/manual", v),
+    mutationFn: (v: ExpenseFormValues & { postedAt: string; confirmDuplicate?: boolean }) =>
+      api.post("/transactions/manual", v),
     onSuccess: () => {
       setShowAddTxn(false);
+      setDuplicateWarning(null);
       invalidate();
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
+    onError: (err, v) => onAddTxnError(err, () => createManualTxn.mutate({ ...v, confirmDuplicate: true })),
   });
+
+  const createTransferTxn = useMutation({
+    mutationFn: (v: TransferFormValues & { postedAt: string; confirmDuplicate?: boolean }) =>
+      api.post("/transactions/transfer", v),
+    onSuccess: () => {
+      setShowAddTxn(false);
+      setDuplicateWarning(null);
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err, v) => onAddTxnError(err, () => createTransferTxn.mutate({ ...v, confirmDuplicate: true })),
+  });
+
+  function handleAddTxnSubmit(v: AddTxnSubmitValues) {
+    setDuplicateWarning(null);
+    if (v.mode === "expense") {
+      const { mode, ...rest } = v;
+      createManualTxn.mutate(rest);
+    } else {
+      const { mode, ...rest } = v;
+      createTransferTxn.mutate(rest);
+    }
+  }
+
+  function handleClone(txn: TransactionRowDTO) {
+    setAddTxnSeed(cloneSeedFromTxn(txn));
+    setAddTxnKey((k) => k + 1);
+    setDuplicateWarning(null);
+    setShowAddTxn(true);
+  }
 
   const total = txns.data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -278,7 +365,16 @@ export function TransactionsPage() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setShowAddTxn((v) => !v)}
+            onClick={() => {
+              const opening = !showAddTxn;
+              setShowAddTxn(opening);
+              if (opening) {
+                setAddTxnSeed(null);
+                setAddTxnKey((k) => k + 1);
+              } else {
+                setDuplicateWarning(null);
+              }
+            }}
             className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
           >
             {showAddTxn ? "Cancel" : "+ Add transaction"}
@@ -302,12 +398,43 @@ export function TransactionsPage() {
       )}
 
       {showAddTxn && (
-        <AddTransactionForm
-          accounts={accounts.data ?? []}
-          categories={categories.data ?? []}
-          busy={createManualTxn.isPending}
-          onSubmit={(v) => createManualTxn.mutate(v)}
-        />
+        <div className="space-y-2">
+          <AddTransactionForm
+            key={addTxnKey}
+            seed={addTxnSeed}
+            accounts={accounts.data ?? []}
+            categories={categories.data ?? []}
+            busy={createManualTxn.isPending || createTransferTxn.isPending}
+            onSubmit={handleAddTxnSubmit}
+          />
+          {duplicateWarning && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <span>
+                Looks like a duplicate of{" "}
+                {duplicateWarning.candidates.map((c, i) => (
+                  <span key={c.id}>
+                    {i > 0 && ", "}
+                    <strong>{formatMoney(c.amount)}</strong> on{" "}
+                    {new Date(c.postedAt).toLocaleDateString("en-CA")}
+                    {c.payee ? ` (${c.payee})` : ""}
+                  </span>
+                ))}
+                .
+              </span>
+              <div className="flex shrink-0 gap-3">
+                <button onClick={() => setDuplicateWarning(null)} className="text-amber-700 underline">
+                  Cancel
+                </button>
+                <button
+                  onClick={() => duplicateWarning.retry()}
+                  className="rounded-lg bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-700"
+                >
+                  Add anyway
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Filters — top row: which transactions (who/what); bottom row: when/how much */}
@@ -499,6 +626,7 @@ export function TransactionsPage() {
               linkTransfer.mutate({ id: t.id, counterpartTransactionId })
             }
             onMergeDuplicate={() => mergeDuplicate.mutate(t.id)}
+            onClone={() => handleClone(t)}
           />
         ))}
       </div>
@@ -555,6 +683,7 @@ function TxnRow({
   onCreateRule,
   onLinkTransfer,
   onMergeDuplicate,
+  onClone,
 }: {
   txn: TransactionRowDTO;
   categories: CategoryDTO[];
@@ -567,6 +696,7 @@ function TxnRow({
   ) => void;
   onLinkTransfer: (counterpartTransactionId: string) => void;
   onMergeDuplicate: () => void;
+  onClone: () => void;
 }) {
   const [note, setNote] = useState(txn.beneficiaryNote ?? "");
   const [showRuleForm, setShowRuleForm] = useState(false);
@@ -599,6 +729,13 @@ function TxnRow({
             )}
           </p>
         </div>
+        <button
+          onClick={onClone}
+          title="Clone as a new transaction"
+          className="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100"
+        >
+          <CloneIcon />
+        </button>
         <button
           onClick={() => setShowRuleForm((s) => !s)}
           title="Create an auto-tag rule from this transaction"
@@ -748,6 +885,20 @@ function TxnRow({
   );
 }
 
+function CloneIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="2" width="8.5" height="8.5" rx="1.3" stroke="currentColor" strokeWidth="1.3" />
+      <path
+        d="M5.5 13.5H12.7C13.15 13.5 13.5 13.15 13.5 12.7V5.5"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function RuleIcon() {
   return (
     <svg
@@ -885,112 +1036,216 @@ function todayDate(): string {
 }
 
 function AddTransactionForm({
+  seed,
   accounts,
   categories,
   busy,
   onSubmit,
 }: {
+  seed: AddTxnSeed | null;
   accounts: AccountDTO[];
   categories: CategoryDTO[];
   busy: boolean;
-  onSubmit: (v: {
-    accountId: string;
-    postedAt: string;
-    amount: number;
-    payee?: string;
-    description?: string;
-    categoryId?: string;
-  }) => void;
+  onSubmit: (v: AddTxnSubmitValues) => void;
 }) {
-  const [accountId, setAccountId] = useState("");
-  const [direction, setDirection] = useState<"in" | "out">("out");
+  const [mode, setMode] = useState<"expense" | "transfer">(seed?.mode ?? "expense");
   const [postedAt, setPostedAt] = useState(todayDate());
-  const [amount, setAmount] = useState("");
-  const [payee, setPayee] = useState("");
-  const [categoryId, setCategoryId] = useState("");
 
-  const canSubmit = accountId && postedAt && Number(amount) > 0;
+  const [accountId, setAccountId] = useState(seed?.mode === "expense" ? (seed.accountId ?? "") : "");
+  const [direction, setDirection] = useState<"in" | "out">(
+    seed?.mode === "expense" && (seed.amount ?? 0) > 0 ? "in" : "out",
+  );
+  const [amount, setAmount] = useState(
+    seed?.mode === "expense" && seed.amount !== undefined ? String(Math.abs(seed.amount)) : "",
+  );
+  const [payee, setPayee] = useState(seed?.mode === "expense" ? (seed.payee ?? "") : "");
+  const [categoryId, setCategoryId] = useState(seed?.mode === "expense" ? (seed.categoryId ?? "") : "");
+
+  const [fromAccountId, setFromAccountId] = useState(seed?.mode === "transfer" ? (seed.fromAccountId ?? "") : "");
+  const [toAccountId, setToAccountId] = useState(seed?.mode === "transfer" ? (seed.toAccountId ?? "") : "");
+  const [transferAmount, setTransferAmount] = useState(
+    seed?.mode === "transfer" && seed.amount !== undefined ? String(seed.amount) : "",
+  );
+  const [billStatus, setBillStatus] = useState<BillStatus>(
+    seed?.mode === "transfer" ? (seed.billStatus ?? "full") : "full",
+  );
+
+  const toIsCreditCard = accounts.find((a) => a.id === toAccountId)?.type === "credit_card";
+
+  const canSubmit =
+    mode === "expense"
+      ? Boolean(accountId && postedAt && Number(amount) > 0)
+      : Boolean(fromAccountId && toAccountId && postedAt && Number(transferAmount) > 0);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const magnitude = Math.abs(Number(amount));
-    if (!accountId || !magnitude) return;
-    onSubmit({
-      accountId,
-      postedAt,
-      amount: direction === "in" ? magnitude : -magnitude,
-      ...(payee.trim() ? { payee: payee.trim() } : {}),
-      ...(categoryId ? { categoryId } : {}),
-    });
-    setAmount("");
-    setPayee("");
-    setCategoryId("");
+    if (mode === "expense") {
+      const magnitude = Math.abs(Number(amount));
+      if (!accountId || !magnitude) return;
+      onSubmit({
+        mode: "expense",
+        accountId,
+        postedAt,
+        amount: direction === "in" ? magnitude : -magnitude,
+        ...(payee.trim() ? { payee: payee.trim() } : {}),
+        ...(categoryId ? { categoryId } : {}),
+      });
+    } else {
+      const magnitude = Number(transferAmount);
+      if (!fromAccountId || !toAccountId || !magnitude) return;
+      onSubmit({
+        mode: "transfer",
+        fromAccountId,
+        toAccountId,
+        postedAt,
+        amount: magnitude,
+        ...(toIsCreditCard ? { billStatus } : {}),
+      });
+    }
   };
 
   return (
     <form onSubmit={submit} className="card flex flex-wrap items-end gap-3 p-4">
       <label className="text-xs font-medium text-slate-600">
-        Account
-        <Combobox
-          options={accountOptions(accounts, "Choose account…")}
-          value={accountId}
-          onChange={setAccountId}
-          className="mt-1 w-44"
-          inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-        />
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        Date
-        <input
-          type="date"
-          value={postedAt}
-          onChange={(e) => setPostedAt(e.target.value)}
-          required
-          className="mt-1 block w-36 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-        />
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        Direction
+        Type
         <select
-          value={direction}
-          onChange={(e) => setDirection(e.target.value as "in" | "out")}
-          className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+          value={mode}
+          onChange={(e) => setMode(e.target.value as "expense" | "transfer")}
+          className="mt-1 block w-36 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
         >
-          <option value="out">Money out</option>
-          <option value="in">Money in</option>
+          <option value="expense">Expense/Income</option>
+          <option value="transfer">Transfer</option>
         </select>
       </label>
-      <label className="text-xs font-medium text-slate-600">
-        Amount
-        <input
-          type="number"
-          step="0.01"
-          min="0.01"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          required
-          className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-        />
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        Payee
-        <input
-          value={payee}
-          onChange={(e) => setPayee(e.target.value)}
-          placeholder="Optional"
-          className="mt-1 block w-40 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-        />
-      </label>
-      <label className="text-xs font-medium text-slate-600">
-        Category
-        <Combobox
-          options={categoryPickOptions(categories, "Optional")}
-          value={categoryId}
-          onChange={setCategoryId}
-          className="mt-1 w-40"
-          inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-        />
-      </label>
+
+      {mode === "expense" ? (
+        <>
+          <label className="text-xs font-medium text-slate-600">
+            Account
+            <Combobox
+              options={accountOptions(accounts, "Choose account…")}
+              value={accountId}
+              onChange={setAccountId}
+              className="mt-1 w-44"
+              inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Date
+            <input
+              type="date"
+              value={postedAt}
+              onChange={(e) => setPostedAt(e.target.value)}
+              required
+              className="mt-1 block w-36 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Direction
+            <select
+              value={direction}
+              onChange={(e) => setDirection(e.target.value as "in" | "out")}
+              className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            >
+              <option value="out">Money out</option>
+              <option value="in">Money in</option>
+            </select>
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Amount
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              required
+              className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Payee
+            <input
+              value={payee}
+              onChange={(e) => setPayee(e.target.value)}
+              placeholder="Optional"
+              className="mt-1 block w-40 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Category
+            <Combobox
+              options={categoryPickOptions(categories, "Optional")}
+              value={categoryId}
+              onChange={setCategoryId}
+              className="mt-1 w-40"
+              inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+        </>
+      ) : (
+        <>
+          <label className="text-xs font-medium text-slate-600">
+            From
+            <Combobox
+              options={accountOptions(accounts, "Choose account…", toAccountId || undefined)}
+              value={fromAccountId}
+              onChange={setFromAccountId}
+              className="mt-1 w-44"
+              inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            To
+            <Combobox
+              options={accountOptions(accounts, "Choose account…", fromAccountId || undefined)}
+              value={toAccountId}
+              onChange={setToAccountId}
+              className="mt-1 w-44"
+              inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Date
+            <input
+              type="date"
+              value={postedAt}
+              onChange={(e) => setPostedAt(e.target.value)}
+              required
+              className="mt-1 block w-36 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-600">
+            Amount
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              value={transferAmount}
+              onChange={(e) => setTransferAmount(e.target.value)}
+              required
+              className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
+          </label>
+          {toIsCreditCard && (
+            <label className="text-xs font-medium text-slate-600">
+              Coverage
+              <select
+                value={billStatus}
+                onChange={(e) => setBillStatus(e.target.value as BillStatus)}
+                className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+              >
+                {BILL_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {BILL_STATUS_LABELS[s]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </>
+      )}
+
       <button
         type="submit"
         disabled={!canSubmit || busy}

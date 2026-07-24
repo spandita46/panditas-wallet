@@ -159,6 +159,18 @@ widths, and read-only first (Dashboard, balances, recent transactions) before I 
 that needs touch-friendly editing. Distribution is just "Add to Home Screen" in the browser. No
 app-store account, no review process, since it's only my family using it anyway.
 
+I did seriously consider React Native instead, since the app being LAN-only by design means
+offline entries need local storage and a sync-on-reconnect trigger, and I wondered whether a PWA
+could handle that on iOS. The honest gap is that Safari has no Background Sync API and can evict
+a PWA's local data after about a week of not being opened, so a queued entry could theoretically
+get lost if I went too long without opening the app. I decided that risk is acceptable: I'm the
+only iOS user in the house, we're home most days, and "open the app once and it syncs" isn't a
+real burden. The $99/year Apple Developer account is a genuinely bitter pill to swallow for
+testing on a single phone, and my wife and kids aren't logging transactions away from home right
+now anyway, so there's no current need to solve that problem. Maintaining a second codebase for a
+maybe-someday requirement isn't worth it either. PWA stays the plan; I'll revisit RN only if the
+eviction issue actually bites me in practice, or if remote logging becomes a real household need.
+
 ---
 
 ### 11. NAS migration

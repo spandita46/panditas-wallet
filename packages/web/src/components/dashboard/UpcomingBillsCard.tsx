@@ -7,9 +7,10 @@ import {
   formatMoney,
   type AccountDTO,
   type BillStatus,
+  type DuplicateCandidateDTO,
   type UpcomingBillDTO,
 } from "@panditas/shared";
-import { api } from "../../api";
+import { api, ApiError } from "../../api";
 import { Card } from "../ui/Card";
 import { SectionHeader } from "../ui/SectionHeader";
 import { Combobox, type ComboboxItem } from "../ui/Combobox";
@@ -122,20 +123,28 @@ function MarkPaidForm({ bill, onDone }: { bill: UpcomingBillDTO; onDone: () => v
   const [postedAt, setPostedAt] = useState(todayDate());
   const [amount, setAmount] = useState("");
   const [billStatus, setBillStatus] = useState<BillStatus>("full");
+  const [duplicateCandidate, setDuplicateCandidate] = useState<DuplicateCandidateDTO | null>(null);
 
   const submit = useMutation({
-    mutationFn: () =>
-      api.post("/transactions/card-payment", {
-        cardAccountId: bill.accountId,
+    mutationFn: (v: { confirmDuplicate?: boolean }) =>
+      api.post("/transactions/transfer", {
         fromAccountId,
+        toAccountId: bill.accountId,
         postedAt,
         amount: Number(amount),
         billStatus,
+        confirmDuplicate: v.confirmDuplicate,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
       onDone();
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.status === 409) {
+        const body = err.body as { candidates?: DuplicateCandidateDTO[] } | undefined;
+        setDuplicateCandidate(body?.candidates?.[0] ?? null);
+      }
     },
   });
 
@@ -190,12 +199,32 @@ function MarkPaidForm({ bill, onDone }: { bill: UpcomingBillDTO; onDone: () => v
         </select>
       </label>
       <button
-        onClick={() => submit.mutate()}
+        onClick={() => submit.mutate({})}
         disabled={!canSubmit || submit.isPending}
         className="rounded-lg bg-accent-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
       >
         {submit.isPending ? "Saving…" : "Save"}
       </button>
+
+      {duplicateCandidate && (
+        <div className="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <span>
+            Looks like a duplicate of <strong>{formatMoney(duplicateCandidate.amount)}</strong> on{" "}
+            {new Date(duplicateCandidate.postedAt).toLocaleDateString("en-CA")}.
+          </span>
+          <div className="flex shrink-0 gap-3">
+            <button onClick={() => setDuplicateCandidate(null)} className="text-amber-700 underline">
+              Cancel
+            </button>
+            <button
+              onClick={() => submit.mutate({ confirmDuplicate: true })}
+              className="rounded-lg bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-700"
+            >
+              Add anyway
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

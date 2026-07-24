@@ -232,6 +232,8 @@ export type LinkTransferInput = z.infer<typeof linkTransferSchema>;
 // reporting gap, backfilling before SimpleFIN was connected). Works on any
 // account, not just fully-manual ones. Amount is signed: positive = money
 // in, negative = money out — same convention as the rest of the ledger.
+// confirmDuplicate re-submits past a 409 duplicate warning (see
+// DuplicateCandidateDTO) once the user's confirmed it's not actually one.
 export const createManualTransactionSchema = z.object({
   accountId: z.string().min(1),
   postedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "postedAt must be YYYY-MM-DD"),
@@ -239,21 +241,36 @@ export const createManualTransactionSchema = z.object({
   payee: z.string().max(200).optional(),
   description: z.string().max(500).optional(),
   categoryId: z.string().optional(),
+  confirmDuplicate: z.boolean().optional(),
 });
 export type CreateManualTransactionInput = z.infer<typeof createManualTransactionSchema>;
 
-// Log a credit-card payment the sync hasn't picked up yet. Deliberately
-// separate from createManualTransactionSchema — a fixed shape (always the
-// "Credit Card Payment" category, always linked to a source account) rather
-// than the general-purpose form, plus the self-reported full/partial call.
-export const logCardPaymentSchema = z.object({
-  cardAccountId: z.string().min(1),
+// One transaction that touches two accounts: a transfer, or its special
+// case, a credit card payment (billStatus is only meaningful when the
+// destination account is a credit card — self-reported full/partial, since
+// there's no way to infer that from data alone). Always creates both sides
+// at once, so a card payment is just a transfer with a specific destination
+// type, not a separate concept.
+export const createTransferSchema = z.object({
   fromAccountId: z.string().min(1),
+  toAccountId: z.string().min(1),
   postedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "postedAt must be YYYY-MM-DD"),
   amount: z.number().positive(),
-  billStatus: z.enum(BILL_STATUSES),
+  billStatus: z.enum(BILL_STATUSES).optional(),
+  confirmDuplicate: z.boolean().optional(),
 });
-export type LogCardPaymentInput = z.infer<typeof logCardPaymentSchema>;
+export type CreateTransferInput = z.infer<typeof createTransferSchema>;
+
+// Returned in the body of a 409 from POST /manual or POST /transfer when a
+// near-duplicate (same account, same exact amount, posted within a few days)
+// already exists. Informational only — the caller decides whether to resubmit
+// with confirmDuplicate: true.
+export interface DuplicateCandidateDTO {
+  id: string;
+  postedAt: string;
+  amount: number;
+  payee: string | null;
+}
 
 // ----------------------------------------------------------------------------
 // Bulk transaction import (CSV from a bank export)

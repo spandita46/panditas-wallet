@@ -4,11 +4,12 @@ import { z } from "zod";
 import {
   BENEFICIARIES,
   createManualTransactionSchema,
+  createTransferSchema,
   importCommitSchema,
   importPreviewSchema,
   linkTransferSchema,
-  logCardPaymentSchema,
   tagTransactionSchema,
+  type DuplicateCandidateDTO,
   type DuplicatePaymentSuggestionDTO,
   type ImportCommitResponse,
   type ImportPreviewResponse,
@@ -92,6 +93,33 @@ function confidenceForDayGap(diffDays: number): number | null {
   if (diffDays <= 3) return 75;
   if (diffDays <= 14) return 50;
   return null;
+}
+
+const DUPLICATE_WINDOW_DAYS = 3;
+
+/**
+ * Soft duplicate guard for manual entry: same account, exact same amount,
+ * posted within a few days — probably a re-entry of something already on
+ * file. Warns (via a 409 the caller can override), never blocks outright.
+ */
+async function findDuplicateCandidate(
+  accountId: string,
+  amount: number,
+  postedAt: Date,
+): Promise<DuplicateCandidateDTO | null> {
+  const windowStart = new Date(postedAt.getTime() - DUPLICATE_WINDOW_DAYS * DAY_MS);
+  const windowEnd = new Date(postedAt.getTime() + DUPLICATE_WINDOW_DAYS * DAY_MS);
+  const candidate = await prisma.transaction.findFirst({
+    where: { accountId, amount, postedAt: { gte: windowStart, lte: windowEnd } },
+    orderBy: { postedAt: "asc" },
+  });
+  if (!candidate) return null;
+  return {
+    id: candidate.id,
+    postedAt: candidate.postedAt.toISOString().slice(0, 10),
+    amount: Number(candidate.amount),
+    payee: candidate.payee,
+  };
 }
 
 /**
@@ -385,11 +413,17 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const account = await prisma.account.findUnique({ where: { id: parsed.data.accountId } });
     if (!account) return reply.code(404).send({ error: "Account not found" });
 
+    const postedAtDate = new Date(`${parsed.data.postedAt}T00:00:00.000Z`);
+    if (!parsed.data.confirmDuplicate) {
+      const candidate = await findDuplicateCandidate(parsed.data.accountId, parsed.data.amount, postedAtDate);
+      if (candidate) return reply.code(409).send({ error: "duplicate", candidates: [candidate] });
+    }
+
     const [txn, updatedAccount] = await prisma.$transaction([
       prisma.transaction.create({
         data: {
           accountId: parsed.data.accountId,
-          postedAt: new Date(`${parsed.data.postedAt}T00:00:00.000Z`),
+          postedAt: postedAtDate,
           amount: parsed.data.amount,
           payee: parsed.data.payee ?? null,
           description: parsed.data.description ?? null,
@@ -410,47 +444,78 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(toTransactionDTO(txn));
   });
 
-  // Log a credit-card payment the sync hasn't picked up yet (e.g. paid mid-cycle,
-  // sync hasn't run since). Always "Credit Card Payment", always linked to the
-  // account it came from — see logCardPaymentSchema for why this is a separate,
-  // narrower endpoint from POST /manual.
-  app.post("/card-payment", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
-    const parsed = logCardPaymentSchema.safeParse(request.body);
+  // One transaction that touches two accounts — a transfer, or its special
+  // case, a credit card payment. Creates both sides atomically, each linked
+  // to the other via transferAccountId. billStatus (self-reported
+  // full/partial) only applies, and is only required, when the destination
+  // is a credit card — see createTransferSchema.
+  app.post("/transfer", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const parsed = createTransferSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
-    const { cardAccountId, fromAccountId, postedAt, amount, billStatus } = parsed.data;
+    const { fromAccountId, toAccountId, postedAt, amount, billStatus, confirmDuplicate } = parsed.data;
 
-    const [card, from, category] = await Promise.all([
-      prisma.account.findUnique({ where: { id: cardAccountId } }),
-      prisma.account.findUnique({ where: { id: fromAccountId } }),
-      prisma.category.findFirst({ where: { name: "Credit Card Payment" } }),
-    ]);
-    if (!card || card.type !== "credit_card") return reply.code(400).send({ error: "cardAccountId must be a credit card" });
-    if (!from) return reply.code(404).send({ error: "fromAccountId not found" });
-    if (from.type === "credit_card") {
-      return reply.code(400).send({ error: "Paying a card from another card isn't supported" });
+    if (fromAccountId === toAccountId) {
+      return reply.code(400).send({ error: "From and to accounts must be different" });
     }
 
-    const [txn, updatedCard] = await prisma.$transaction([
+    const [from, to] = await Promise.all([
+      prisma.account.findUnique({ where: { id: fromAccountId } }),
+      prisma.account.findUnique({ where: { id: toAccountId } }),
+    ]);
+    if (!from) return reply.code(404).send({ error: "fromAccountId not found" });
+    if (!to) return reply.code(404).send({ error: "toAccountId not found" });
+    if (from.type === "credit_card" && to.type === "credit_card") {
+      return reply.code(400).send({ error: "Paying a card from another card isn't supported" });
+    }
+    if (to.type === "credit_card" && !billStatus) {
+      return reply.code(400).send({ error: "billStatus is required when paying a credit card" });
+    }
+
+    const postedAtDate = new Date(`${postedAt}T00:00:00.000Z`);
+    if (!confirmDuplicate) {
+      const candidate = await findDuplicateCandidate(toAccountId, amount, postedAtDate);
+      if (candidate) return reply.code(409).send({ error: "duplicate", candidates: [candidate] });
+    }
+
+    const category = await prisma.category.findFirst({
+      where: { name: to.type === "credit_card" ? "Credit Card Payment" : "Account Transfer" },
+    });
+    const payee = to.type === "credit_card" ? "Payment" : "Transfer";
+
+    const [, toTxn, updatedFrom, updatedTo] = await prisma.$transaction([
       prisma.transaction.create({
         data: {
-          accountId: cardAccountId,
-          postedAt: new Date(`${postedAt}T00:00:00.000Z`),
+          accountId: fromAccountId,
+          postedAt: postedAtDate,
+          amount: -amount,
+          payee,
+          categoryId: category?.id ?? null,
+          transferAccountId: toAccountId,
+          source: "manual",
+        },
+      }),
+      prisma.transaction.create({
+        data: {
+          accountId: toAccountId,
+          postedAt: postedAtDate,
           amount,
-          payee: "Payment",
+          payee,
           categoryId: category?.id ?? null,
           transferAccountId: fromAccountId,
           source: "manual",
-          billStatus,
+          billStatus: to.type === "credit_card" ? (billStatus ?? null) : null,
         },
         include: withRelations,
       }),
-      prisma.account.update({ where: { id: cardAccountId }, data: { currentBalance: { increment: amount } } }),
+      prisma.account.update({ where: { id: fromAccountId }, data: { currentBalance: { decrement: amount } } }),
+      prisma.account.update({ where: { id: toAccountId }, data: { currentBalance: { increment: amount } } }),
     ]);
-    await prisma.balanceSnapshot.create({
-      data: { accountId: card.id, balance: updatedCard.currentBalance },
-    });
+    await Promise.all([
+      prisma.balanceSnapshot.create({ data: { accountId: fromAccountId, balance: updatedFrom.currentBalance } }),
+      prisma.balanceSnapshot.create({ data: { accountId: toAccountId, balance: updatedTo.currentBalance } }),
+    ]);
 
-    return reply.code(201).send(toTransactionDTO(txn));
+    return reply.code(201).send(toTransactionDTO(toTxn));
   });
 
   // Undo a manual entry (e.g. after "Merge" resolves it was a duplicate of a

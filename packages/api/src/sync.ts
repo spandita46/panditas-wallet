@@ -169,7 +169,10 @@ async function upsertAccount(institutionId: string, institutionName: string, a: 
 // of which account they land in, so any landing on a "TFSA"-labeled Sun Life
 // account get moved to the sibling "RRSP" account at the same institution
 // before categorization runs. No-ops for every other institution/account.
-const RRSP_FUND_PAYEE_PATTERNS = ["Employer Contribution", "Retirement Units at Contribution Member"];
+// Regexes, not literal substrings — Sun Life inconsistently inserts a fund
+// code into the name (e.g. "Retirement X Units at Contribution Member" vs.
+// "Retirement Units at Contribution Member"), which a literal match misses.
+const RRSP_FUND_PAYEE_PATTERNS = [/Employer Contribution/i, /Retirement.*Units at Contribution Member/i];
 
 async function reassignMisroutedRrspContributions(accountId: string, newTxnIds: string[]): Promise<void> {
   const account = await prisma.account.findUnique({
@@ -190,10 +193,11 @@ async function reassignMisroutedRrspContributions(accountId: string, newTxnIds: 
   });
   if (!rrspSibling) return;
 
-  const candidates = await prisma.transaction.findMany({
-    where: { id: { in: newTxnIds }, OR: RRSP_FUND_PAYEE_PATTERNS.map((pattern) => ({ payee: { contains: pattern } })) },
-    select: { id: true, externalId: true },
+  const newTxns = await prisma.transaction.findMany({
+    where: { id: { in: newTxnIds } },
+    select: { id: true, externalId: true, payee: true },
   });
+  const candidates = newTxns.filter((t) => t.payee && RRSP_FUND_PAYEE_PATTERNS.some((p) => p.test(t.payee!)));
   if (candidates.length === 0) return;
 
   // The feed re-delivers these under the TFSA account on every sync, even
