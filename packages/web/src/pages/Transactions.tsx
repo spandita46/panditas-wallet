@@ -67,6 +67,14 @@ function categoryPickOptions(
     ),
   ];
 }
+// Shared by AddTransactionForm and EditTransactionForm — every dropdown in
+// these forms uses the same Combobox component, not a mix of native <select>
+// and Combobox, so behavior and styling stay uniform.
+const DIRECTION_OPTIONS: ComboboxItem[] = [
+  { value: "out", label: "Money out" },
+  { value: "in", label: "Money in" },
+];
+
 function familyOptions(
   family: FamilyMemberDTO[],
   placeholder: string,
@@ -1085,14 +1093,13 @@ function EditTransactionForm({
       </label>
       <label className="text-xs font-medium text-slate-600">
         Direction
-        <select
+        <Combobox
+          options={DIRECTION_OPTIONS}
           value={direction}
-          onChange={(e) => setDirection(e.target.value as "in" | "out")}
-          className="mt-1 block w-28 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm"
-        >
-          <option value="out">Money out</option>
-          <option value="in">Money in</option>
-        </select>
+          onChange={(v) => setDirection(v as "in" | "out")}
+          className="mt-1 w-28"
+          inputClassName="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-sm"
+        />
       </label>
       <label className="text-xs font-medium text-slate-600">
         Amount
@@ -1201,19 +1208,17 @@ function CreateRuleForm({
         Create an auto-tag rule from this transaction
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        <select
+        <Combobox
+          options={[
+            { value: "account", label: `This account (${txn.accountName})` },
+            { value: "payee_contains", label: "Payee contains…" },
+            { value: "description_regex", label: "Description matches…" },
+          ]}
           value={matchType}
-          onChange={(e) =>
-            setMatchType(
-              e.target.value as Exclude<RuleConditionType, "amount_range">,
-            )
-          }
-          className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-        >
-          <option value="account">This account ({txn.accountName})</option>
-          <option value="payee_contains">Payee contains…</option>
-          <option value="description_regex">Description matches…</option>
-        </select>
+          onChange={(v) => setMatchType(v as Exclude<RuleConditionType, "amount_range">)}
+          className="w-48"
+          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+        />
         {matchType !== "account" && (
           <input
             value={pattern}
@@ -1356,14 +1361,16 @@ function AddTransactionForm({
     <form onSubmit={submit} className="card flex flex-wrap items-end gap-3 p-4">
       <label className="text-xs font-medium text-slate-600">
         Type
-        <select
+        <Combobox
+          options={[
+            { value: "expense", label: "Expense/Income" },
+            { value: "transfer", label: "Transfer" },
+          ]}
           value={mode}
-          onChange={(e) => setMode(e.target.value as "expense" | "transfer")}
-          className="mt-1 block w-36 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-        >
-          <option value="expense">Expense/Income</option>
-          <option value="transfer">Transfer</option>
-        </select>
+          onChange={(v) => setMode(v as "expense" | "transfer")}
+          className="mt-1 w-36"
+          inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+        />
       </label>
 
       {mode === "expense" ? (
@@ -1390,14 +1397,13 @@ function AddTransactionForm({
           </label>
           <label className="text-xs font-medium text-slate-600">
             Direction
-            <select
+            <Combobox
+              options={DIRECTION_OPTIONS}
               value={direction}
-              onChange={(e) => setDirection(e.target.value as "in" | "out")}
-              className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-            >
-              <option value="out">Money out</option>
-              <option value="in">Money in</option>
-            </select>
+              onChange={(v) => setDirection(v as "in" | "out")}
+              className="mt-1 w-28"
+              inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+            />
           </label>
           <label className="text-xs font-medium text-slate-600">
             Amount
@@ -1486,17 +1492,13 @@ function AddTransactionForm({
           {toIsCreditCard && (
             <label className="text-xs font-medium text-slate-600">
               Coverage
-              <select
+              <Combobox
+                options={BILL_STATUSES.map((s) => ({ value: s, label: BILL_STATUS_LABELS[s] }))}
                 value={billStatus}
-                onChange={(e) => setBillStatus(e.target.value as BillStatus)}
-                className="mt-1 block w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
-              >
-                {BILL_STATUSES.map((s) => (
-                  <option key={s} value={s}>
-                    {BILL_STATUS_LABELS[s]}
-                  </option>
-                ))}
-              </select>
+                onChange={(v) => setBillStatus(v as BillStatus)}
+                className="mt-1 w-28"
+                inputClassName="rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm"
+              />
             </label>
           )}
         </>

@@ -186,17 +186,13 @@ function MarkPaidForm({ bill, onDone }: { bill: UpcomingBillDTO; onDone: () => v
       </label>
       <label className="text-xs font-medium text-slate-600">
         Coverage
-        <select
+        <Combobox
+          options={BILL_STATUSES.map((s) => ({ value: s, label: BILL_STATUS_LABELS[s] }))}
           value={billStatus}
-          onChange={(e) => setBillStatus(e.target.value as BillStatus)}
-          className="mt-1 block w-28 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs"
-        >
-          {BILL_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {BILL_STATUS_LABELS[s]}
-            </option>
-          ))}
-        </select>
+          onChange={(v) => setBillStatus(v as BillStatus)}
+          className="mt-1 w-28"
+          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs"
+        />
       </label>
       <button
         onClick={() => submit.mutate({})}

@@ -26,11 +26,13 @@ interface ComboboxProps {
 }
 
 /**
- * Searchable, sortable dropdown — drop-in replacement for a native <select>
- * when the option list is long or grows over time (accounts, categories,
- * family members). Callers include an explicit `{ value: "", label: "…" }`
- * placeholder item when a "clear/all" choice is wanted, same as the native
- * <select>'s first <option value="">.
+ * The one dropdown component for this app — use it in place of a native
+ * <select> everywhere, even a fixed two-option toggle, not just long or
+ * dynamic lists (accounts, categories). Mixing native <select> and this
+ * component across a form is exactly the inconsistency this exists to
+ * avoid. Callers include an explicit `{ value: "", label: "…" }` placeholder
+ * item when a "clear/all" choice is wanted, same as the native <select>'s
+ * first <option value="">.
  */
 export function Combobox({
   options,
