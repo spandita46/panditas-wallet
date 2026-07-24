@@ -29,6 +29,17 @@ export function toneColor(tone: DonutTone, index: number): string {
   return palette[index % palette.length] ?? palette[0]!;
 }
 
+// Picks readable text color for an arbitrary fill (e.g. a Treemap cell) —
+// computed from actual luminance rather than hardcoding which palette
+// indices are "light," so this stays correct if a palette ever changes.
+export function contrastText(hex: string): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.6 ? "#1e293b" : "#ffffff";
+}
+
 // Diverging emerald<->rose steps for the spending/income calendar heatmap: a
 // day's net (income - expense) reads green when net-positive, red when
 // net-negative, intensity scaled by magnitude relative to the period's max.

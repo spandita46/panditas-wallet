@@ -601,6 +601,19 @@ export interface AccountBalancePoint {
   balance: number;
 }
 
+// Whole-household net worth over time, from NetWorthCheckpoint (captured on
+// every sync) — powers the Dashboard's landing net-worth chart. Downsampled
+// server-side to one point per calendar day.
+export const NET_WORTH_HISTORY_RANGES = ["30d", "90d", "1y", "all"] as const;
+export type NetWorthHistoryRange = (typeof NET_WORTH_HISTORY_RANGES)[number];
+
+export interface NetWorthHistoryPoint {
+  date: string;
+  assets: number;
+  liabilities: number;
+  netWorth: number;
+}
+
 // ----------------------------------------------------------------------------
 // Money helpers
 // ----------------------------------------------------------------------------

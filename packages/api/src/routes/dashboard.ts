@@ -1,5 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { isLiability, type AccountDTO, type AccountType, type DashboardSummary } from "@panditas/shared";
+import { z } from "zod";
+import {
+  isLiability,
+  NET_WORTH_HISTORY_RANGES,
+  type AccountDTO,
+  type AccountType,
+  type DashboardSummary,
+  type NetWorthHistoryPoint,
+} from "@panditas/shared";
 import { prisma } from "../db.js";
 import { requireRole } from "../auth.js";
 import { toAccountDTO, toTransactionDTO } from "../mappers.js";
@@ -7,6 +15,13 @@ import { getUpcomingBills } from "../periodicSummary.js";
 import { listActiveNotifications } from "../notificationCenter.js";
 
 const UPCOMING_BILLS_HORIZON_DAYS = 14;
+
+const RANGE_DAYS: Record<Exclude<(typeof NET_WORTH_HISTORY_RANGES)[number], "all">, number> = {
+  "30d": 30,
+  "90d": 90,
+  "1y": 365,
+};
+const historyQuerySchema = z.object({ range: z.enum(NET_WORTH_HISTORY_RANGES).default("90d") });
 
 export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   // Family financial dashboard — adults/admin only.
@@ -63,6 +78,35 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       })),
     };
     return summary;
+  });
+
+  // Whole-household net worth over time, for the Dashboard's landing chart.
+  // Downsamples NetWorthCheckpoint (one row per sync, ~4/day at the default
+  // cron) to the last checkpoint of each calendar day — no point plotting
+  // every raw sync.
+  app.get("/net-worth-history", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
+    const parsed = historyQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid range" });
+    const { range } = parsed.data;
+
+    const since = range === "all" ? undefined : new Date(Date.now() - RANGE_DAYS[range] * 24 * 60 * 60 * 1000);
+    const checkpoints = await prisma.netWorthCheckpoint.findMany({
+      where: since ? { computedAt: { gte: since } } : {},
+      orderBy: { computedAt: "asc" },
+    });
+
+    // Ascending order means a later same-day checkpoint naturally overwrites
+    // an earlier one in the map, leaving the day's last value.
+    const byDay = new Map<string, (typeof checkpoints)[number]>();
+    for (const c of checkpoints) byDay.set(c.computedAt.toISOString().slice(0, 10), c);
+
+    const history: NetWorthHistoryPoint[] = [...byDay.values()].map((c) => ({
+      date: c.computedAt.toISOString(),
+      assets: Number(c.assetsTotal),
+      liabilities: Number(c.liabilitiesTotal),
+      netWorth: Number(c.assetsTotal) - Number(c.liabilitiesTotal),
+    }));
+    return history;
   });
 }
 

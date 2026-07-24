@@ -19,13 +19,13 @@ import {
 import { api } from "../api";
 import { Card } from "../components/ui/Card";
 import { SectionHeader } from "../components/ui/SectionHeader";
-import { StatCard } from "../components/ui/StatCard";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
 import { ChartTooltip } from "../components/ui/ChartTooltip";
 import { flowIntensity } from "../components/ui/chartColors";
 import { CompositionCard } from "../components/dashboard/CompositionCard";
 import { UpcomingBillsCard } from "../components/dashboard/UpcomingBillsCard";
 import { NotificationBanners } from "../components/dashboard/NotificationBanners";
+import { NetWorthSection } from "../components/dashboard/NetWorthSection";
 import { monthEndDate, monthKey, monthLabel, shiftMonth } from "../lib/month";
 import { transactionsLink } from "../lib/transactionsLink";
 
@@ -87,24 +87,16 @@ export function DashboardPage() {
 
       {data && (
         <div className="space-y-8">
+          <NetWorthSection netWorth={data.netWorth} />
+
           <NotificationBanners notifications={data.notifications} />
-
-          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatCard
-              label="Net worth"
-              value={data.netWorth.netWorth}
-              tone={data.netWorth.netWorth >= 0 ? "asset" : "liability"}
-            />
-            <StatCard label="Assets" value={data.netWorth.assets} tone="asset" />
-            <StatCard label="Liabilities" value={-data.netWorth.liabilities} tone="liability" />
-          </section>
-
-          <UpcomingBillsCard bills={data.upcomingBills} />
 
           <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <CompositionCard title="Assets breakdown" tone="asset" accountsByType={data.accountsByType} />
             <CompositionCard title="Liabilities breakdown" tone="liability" accountsByType={data.accountsByType} />
           </section>
+
+          <UpcomingBillsCard bills={data.upcomingBills} />
 
           <section>
             <SectionHeader

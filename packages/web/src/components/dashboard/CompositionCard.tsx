@@ -13,40 +13,35 @@ import {
 } from "recharts";
 import {
   formatMoney,
-  isLiability,
   type AccountBalancePoint,
   type AccountDTO,
-  type AccountType,
   type DashboardSummary,
 } from "@panditas/shared";
 import { api } from "../../api";
 import { Card } from "../ui/Card";
 import { SectionHeader } from "../ui/SectionHeader";
-import { Donut, type DonutSlice } from "../ui/Donut";
+import { Treemap, type TreemapCell } from "../ui/Treemap";
 import { ChartTooltip } from "../ui/ChartTooltip";
 import { toneColor } from "../ui/chartColors";
 
-const TYPE_LABELS: Record<AccountType, string> = {
-  chequing: "Chequing",
-  savings: "Savings",
-  credit_card: "Credit card",
-  investment: "Investment",
-  loan: "Loan",
-  cash: "Cash",
-  piggy_bank: "Piggy bank",
-};
-
 type Tone = "asset" | "liability";
 
-type DrillState =
-  | { level: "type" }
-  | { level: "accounts"; type: AccountType; typeLabel: string }
-  | { level: "account"; type: AccountType; typeLabel: string; accountId: string; accountLabel: string };
+// Cells beyond this rank collapse into one "Other" rollup — keeps every
+// visible treemap cell big enough to hold a legible label (see Treemap.tsx).
+const TOP_N = 4;
 
-/** Assets/Liabilities composition donut with an in-place drill-down: click a
- * slice (account type) to see the accounts making it up as a bar chart, then
- * click an account to see its balance history — all inside the same card, via
- * a breadcrumb + back button rather than navigating away. */
+type DrillState =
+  | { level: "top" }
+  | { level: "other" }
+  | { level: "account"; accountId: string; accountLabel: string; from: "top" | "other" };
+
+/** Assets/Liabilities composition treemap with an in-place drill-down: click
+ * one of the top accounts to see its balance history directly, or click
+ * "Other" to see the smaller accounts as a bar chart first — all inside the
+ * same card, via a breadcrumb + back button rather than navigating away.
+ * Individual account-level cells (not grouped by account type) so similarly
+ * colored accounts, e.g. two credit cards, are told apart by their own label
+ * instead of a shade of red in a legend. */
 export function CompositionCard({
   title,
   tone,
@@ -56,18 +51,21 @@ export function CompositionCard({
   tone: Tone;
   accountsByType: DashboardSummary["accountsByType"] | undefined;
 }) {
-  const [drill, setDrill] = useState<DrillState>({ level: "type" });
-  const slices = useMemo(() => buildSlices(accountsByType, tone), [accountsByType, tone]);
+  const [drill, setDrill] = useState<DrillState>({ level: "top" });
+  const { cells, otherAccounts } = useMemo(() => buildTreemapCells(accountsByType, tone), [accountsByType, tone]);
 
-  const goTop = () => setDrill({ level: "type" });
-  const goAccounts = (type: AccountType, typeLabel: string) => setDrill({ level: "accounts", type, typeLabel });
-  const goBack = () => setDrill(drill.level === "account" ? { level: "accounts", type: drill.type, typeLabel: drill.typeLabel } : { level: "type" });
+  const goTop = () => setDrill({ level: "top" });
+  const goOther = () => setDrill({ level: "other" });
+  const goAccount = (accountId: string, accountLabel: string, from: "top" | "other") =>
+    setDrill({ level: "account", accountId, accountLabel, from });
+  const goBack = () =>
+    setDrill(drill.level === "account" && drill.from === "other" ? { level: "other" } : { level: "top" });
 
   return (
     <Card>
       <SectionHeader>{title}</SectionHeader>
 
-      {drill.level !== "type" && (
+      {drill.level !== "top" && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs">
           <button onClick={goBack} className="mr-1 font-medium text-accent-600 hover:underline">
             ← Back
@@ -76,36 +74,35 @@ export function CompositionCard({
             {title}
           </button>
           <span className="text-slate-300">/</span>
-          {drill.level === "accounts" && <span className="font-medium text-slate-700">{drill.typeLabel}</span>}
-          {drill.level === "account" && (
+          {drill.level === "other" && <span className="font-medium text-slate-700">Other</span>}
+          {drill.level === "account" && drill.from === "other" && (
             <>
-              <button onClick={() => goAccounts(drill.type, drill.typeLabel)} className="text-slate-500 hover:text-accent-600 hover:underline">
-                {drill.typeLabel}
+              <button onClick={goOther} className="text-slate-500 hover:text-accent-600 hover:underline">
+                Other
               </button>
               <span className="text-slate-300">/</span>
               <span className="font-medium text-slate-700">{drill.accountLabel}</span>
             </>
           )}
+          {drill.level === "account" && drill.from === "top" && (
+            <span className="font-medium text-slate-700">{drill.accountLabel}</span>
+          )}
         </div>
       )}
 
-      {drill.level === "type" && (
-        <Donut
-          data={slices}
+      {drill.level === "top" && (
+        <Treemap
+          data={cells}
           tone={tone}
-          onSliceClick={(i) => {
-            const s = slices[i];
-            if (s?.key) goAccounts(s.key as AccountType, s.label);
+          onCellClick={(cell) => {
+            if (cell.isOther) goOther();
+            else if (cell.key) goAccount(cell.key, cell.label, "top");
           }}
         />
       )}
 
-      {drill.level === "accounts" && (
-        <AccountsBarChart
-          accounts={accountsByType?.[drill.type] ?? []}
-          tone={tone}
-          onSelect={(a) => setDrill({ level: "account", type: drill.type, typeLabel: drill.typeLabel, accountId: a.id, accountLabel: a.displayName })}
-        />
+      {drill.level === "other" && (
+        <AccountsBarChart accounts={otherAccounts} tone={tone} onSelect={(a) => goAccount(a.id, a.displayName, "other")} />
       )}
 
       {drill.level === "account" && <AccountHistoryChart accountId={drill.accountId} tone={tone} />}
@@ -113,18 +110,40 @@ export function CompositionCard({
   );
 }
 
-function buildSlices(accountsByType: DashboardSummary["accountsByType"] | undefined, tone: Tone): DonutSlice[] {
-  if (!accountsByType) return [];
-  const slices: DonutSlice[] = [];
-  for (const [type, accounts] of Object.entries(accountsByType) as [AccountType, AccountDTO[]][]) {
-    if (!accounts || accounts.length === 0 || isLiability(type) !== (tone === "liability")) continue;
-    const value =
-      tone === "liability"
-        ? accounts.reduce((sum, a) => sum + Math.abs(a.currentBalance), 0)
-        : accounts.reduce((sum, a) => sum + a.currentBalance, 0);
-    if (value > 0) slices.push({ label: TYPE_LABELS[type], value, key: type });
+function buildTreemapCells(
+  accountsByType: DashboardSummary["accountsByType"] | undefined,
+  tone: Tone,
+): { cells: TreemapCell[]; otherAccounts: AccountDTO[] } {
+  if (!accountsByType) return { cells: [], otherAccounts: [] };
+
+  const withValue = Object.values(accountsByType)
+    .flat()
+    .filter((a) => a.isLiability === (tone === "liability"))
+    .map((account) => ({
+      account,
+      value: tone === "liability" ? Math.abs(account.currentBalance) : account.currentBalance,
+    }))
+    .filter((x) => x.value > 0)
+    .sort((a, b) => b.value - a.value);
+
+  // A single-account "Other" rollup is pointless indirection — only split
+  // once there's an actual tail worth collapsing.
+  if (withValue.length <= TOP_N + 1) {
+    return {
+      cells: withValue.map((x) => ({ label: x.account.displayName, value: x.value, key: x.account.id })),
+      otherAccounts: [],
+    };
   }
-  return slices.sort((a, b) => b.value - a.value);
+
+  const top = withValue.slice(0, TOP_N);
+  const rest = withValue.slice(TOP_N);
+  const cells: TreemapCell[] = top.map((x) => ({ label: x.account.displayName, value: x.value, key: x.account.id }));
+  cells.push({
+    label: `Other (${rest.length})`,
+    value: rest.reduce((sum, x) => sum + x.value, 0),
+    isOther: true,
+  });
+  return { cells, otherAccounts: rest.map((x) => x.account) };
 }
 
 function AccountsBarChart({
