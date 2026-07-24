@@ -64,8 +64,20 @@ async function upsertAccount(institutionId: string, institutionName: string, a: 
   // it at face value would silently regress currentBalance, and net worth
   // with it, back to out-of-date data. Skip the balance/snapshot write when
   // that happens; everything else about this sync still runs normally.
+  // A missing balance-date on the incoming payload counts as stale too, not
+  // as "fresh by default" — once we have a trusted balanceAsOf on file, an
+  // undated reply is more likely a degraded/cached response (observed right
+  // as a connector slides into auth_required) than genuinely new data.
   const isStaleBalance =
-    !!existingAccount?.balanceAsOf && !!a.balanceDate && a.balanceDate < existingAccount.balanceAsOf;
+    !!existingAccount?.balanceAsOf && (!a.balanceDate || a.balanceDate < existingAccount.balanceAsOf);
+
+  if (!isStaleBalance && existingAccount && Number(a.balance) < Number(existingAccount.currentBalance)) {
+    console.warn(
+      `[sync] balance decrease accepted for account ${existingAccount.id} (${a.name}): ` +
+        `${existingAccount.currentBalance} -> ${a.balance}, balanceDate ${a.balanceDate?.toISOString() ?? "null"} ` +
+        `(existing balanceAsOf ${existingAccount.balanceAsOf?.toISOString() ?? "null"})`,
+    );
+  }
 
   const account = existingAccount
     ? await prisma.account.update({
