@@ -12,8 +12,6 @@ import {
   tagTransactionSchema,
   type DuplicateCandidateDTO,
   type DuplicatePaymentSuggestionDTO,
-  type ImportCommitResponse,
-  type ImportPreviewResponse,
   type TransactionListResponse,
   type TransferSuggestionDTO,
 } from "@panditas/shared";
@@ -21,6 +19,7 @@ import { prisma } from "../db.js";
 import { requireRole } from "../auth.js";
 import { recategorizeAll } from "../categorize.js";
 import { toTransactionDTO } from "../mappers.js";
+import { commitImportRows, previewImportRows } from "../importCore.js";
 
 const listQuerySchema = z.object({
   accountId: z.string().optional(),
@@ -593,10 +592,9 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
   // Bulk import (a bank export beyond SimpleFIN's 90-day window). File
   // parsing and column mapping happen client-side — this only ever sees
-  // already-normalized rows. Flags likely duplicates (same account, date,
-  // amount) for the user to review before committing; not exact dedup, since
-  // imported rows have no externalId to match on. Admin-only, same as other
-  // structural account/transaction bulk operations.
+  // already-normalized rows. Admin-only, same as other structural
+  // account/transaction bulk operations. Preview/commit logic itself lives in
+  // importCore.ts, shared with folder sync's agent-assisted import.
   app.post("/import/preview", { preHandler: requireRole("admin") }, async (request, reply) => {
     const parsed = importPreviewSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
@@ -605,36 +603,9 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const account = await prisma.account.findUnique({ where: { id: accountId } });
     if (!account) return reply.code(404).send({ error: "Account not found" });
 
-    const dates = rows.map((r) => new Date(`${r.postedAt}T00:00:00.000Z`));
-    const existing = await prisma.transaction.findMany({
-      where: {
-        accountId,
-        postedAt: { gte: new Date(Math.min(...dates.map((d) => d.getTime()))), lte: new Date(Math.max(...dates.map((d) => d.getTime()))) },
-      },
-      select: { postedAt: true, amount: true },
-    });
-    const existingKeys = new Set(existing.map((t) => `${t.postedAt.toISOString().slice(0, 10)}|${Number(t.amount)}`));
-
-    const result: ImportPreviewResponse = {
-      rows: rows.map((r, index) => ({
-        index,
-        postedAt: r.postedAt,
-        amount: r.amount,
-        payee: r.payee ?? null,
-        memo: r.memo ?? null,
-        duplicate: existingKeys.has(`${r.postedAt}|${r.amount}`),
-      })),
-      duplicateCount: 0,
-    };
-    result.duplicateCount = result.rows.filter((r) => r.duplicate).length;
-    return result;
+    return previewImportRows(accountId, rows);
   });
 
-  // Commits rows the user confirmed in the preview step (already excludes
-  // whatever they chose to skip). Historical backfill only — deliberately
-  // does NOT touch currentBalance/BalanceSnapshot, since the account's
-  // current balance is already correct from sync (or from manual edits) and
-  // isn't affected by filling in older history.
   app.post("/import/commit", { preHandler: requireRole("admin") }, async (request, reply) => {
     const parsed = importCommitSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
@@ -643,19 +614,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const account = await prisma.account.findUnique({ where: { id: accountId } });
     if (!account) return reply.code(404).send({ error: "Account not found" });
 
-    await prisma.transaction.createMany({
-      data: rows.map((r) => ({
-        accountId,
-        postedAt: new Date(`${r.postedAt}T00:00:00.000Z`),
-        amount: r.amount,
-        payee: r.payee ?? null,
-        memo: r.memo ?? null,
-        source: "manual" as const,
-      })),
-    });
-    const recategorized = await recategorizeAll(true);
-
-    const response: ImportCommitResponse = { imported: rows.length, recategorized };
+    const response = await commitImportRows(accountId, rows);
     return reply.code(201).send(response);
   });
 

@@ -40,6 +40,7 @@ model User {
   benefitingTxns   Transaction[] @relation("TxnBeneficiary")
   defaultForCategories Category[]     @relation("CategoryDefaultBeneficiary")
   beneficiaryOfRules   CategoryRule[] @relation("RuleBeneficiary")
+  reviewedPendingImports PendingImport[]
 }
 
 model Session {
@@ -207,6 +208,8 @@ model Account {
   ruleConditions CategoryRuleCondition[]
   linkedByRules  CategoryRule[]    @relation("RuleLinkedAccount")
   transferTxns   Transaction[]     @relation("TxnTransferAccount")
+  pendingImports PendingImport[] @relation("PendingImportAccount")
+  folderSyncMappingSuggestions FolderSyncMapping[] @relation("FolderSyncSuggestedAccount")
 
   @@unique([institutionId, externalId])
   @@index([type])
@@ -438,6 +441,122 @@ model BalanceSnapshot {
   balance    Decimal  @db.Decimal(14, 2)
 
   @@index([accountId, capturedAt])
+}
+
+// ----------------------------------------------------------------------------
+// Folder sync (agent-assisted transaction import)
+// ----------------------------------------------------------------------------
+// Bank export files (CSV/XLSX/PDF) dropped into a watched folder, parsed by a
+// Claude-powered agent into normalized rows + an account guess. Nothing here
+// ever becomes a real Transaction without a human approving it first.
+
+enum FolderSyncFileType {
+  csv
+  xlsx
+  pdf
+}
+
+enum FolderSyncStatus {
+  needs_review
+  needs_account
+  parse_failed
+  committed
+  rejected
+}
+
+enum FolderSyncMappingSource {
+  cache_hit
+  agent
+}
+
+model PendingImport {
+  id               String                  @id @default(cuid())
+  fileName         String
+  // sha256 of raw file bytes. Combined with groupKey for dedup — a
+  // multi-account file (see groupKey below) hashes to the same fileHash
+  // across all of its split rows, so fileHash alone can no longer be unique.
+  fileHash         String
+  // Set when this row is one of several split out of a single multi-account
+  // file (e.g. one Wealthsimple CSV covering Chequing + FHSA + two TFSAs) —
+  // the raw per-row account identifier from the file (rawAccountId below).
+  // Empty string for the common single-account-per-file case, preserving
+  // today's one-row-per-file behavior and dedup key.
+  groupKey         String                  @default("")
+  // The file's own raw account-id column value this row was split from, e.g.
+  // Wealthsimple's "WK4913RK8CAD" — null unless groupKey is set. Carried
+  // forward so approve can teach the accountIdHints cache below.
+  rawAccountId     String?
+  fileType         FolderSyncFileType
+  status           FolderSyncStatus        @default(needs_review)
+  mappingSource    FolderSyncMappingSource
+  mappingCacheId   String?
+  mappingCache     FolderSyncMapping?      @relation(fields: [mappingCacheId], references: [id], onDelete: SetNull)
+  // Agent's best guess at the target account; null = needs_account.
+  accountId        String?
+  account          Account?                @relation("PendingImportAccount", fields: [accountId], references: [id], onDelete: SetNull)
+  // 0-1, null on a cache hit (deterministic, no agent confidence to report) or parse_failed.
+  confidence       Float?
+  // ImportRow[] shape: {postedAt, amount, payee, memo}[] — opaque, never queried independently of its parent file.
+  rows             Json
+  // CSV only: the header fingerprint + column mapping actually used (agent
+  // guess or cache hit). Carried forward from scan time so a successful
+  // approve of an agent-mapped file can "teach" FolderSyncMapping without
+  // re-parsing the original file.
+  headerFingerprint String?
+  columnMapping     Json?
+  // Agent's free-text explanation, shown in the review UI.
+  notes            String?
+  // Set on parse_failed.
+  errorMessage     String?
+  reviewedAt       DateTime?
+  reviewedByUserId String?
+  reviewedByUser   User?                   @relation(fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@unique([fileHash, groupKey])
+  @@index([status])
+}
+
+// CSV-only header-fingerprint -> column-mapping cache. A previously-seen
+// header format skips the LLM call entirely; XLSX/PDF always go through the
+// agent in v1 (harder to fingerprint reliably, lower volume, not worth
+// caching yet).
+model FolderSyncMapping {
+  id                 String    @id @default(cuid())
+  headerFingerprint  String    @unique
+  // e.g. "RBC Chequing export" — set from the agent's institutionGuess on first use.
+  sourceLabel        String?
+  dateColumn         Int
+  dateFormat         String
+  payeeColumn        Int?
+  memoColumn         Int?
+  amountMode         String
+  amountColumn       Int?
+  flipSign           Boolean   @default(false)
+  debitColumn        Int?
+  creditColumn       Int?
+  // Multi-account files only: the column holding a per-row account
+  // identifier (e.g. Wealthsimple's account_id), and optionally a column
+  // naming the account type (e.g. "TFSA") used to narrow candidates before
+  // ever asking the agent. Null for an ordinary single-account file.
+  accountColumn      Int?
+  accountTypeColumn  Int?
+  // Multi-account files only: raw account-id -> target Account.id, taught
+  // the same way as suggestedAccountId below — only written on a human
+  // approve, never from the agent's raw guess. Lets a recognized raw account
+  // id resolve deterministically on every later scan, skipping both the
+  // narrowing heuristic and the disambiguation agent call.
+  accountIdHints     Json?
+  // Set only after a human approves an agent-mapped file using this mapping —
+  // never written from the agent's raw guess. This is the "teaching" step.
+  suggestedAccountId String?
+  suggestedAccount   Account?  @relation("FolderSyncSuggestedAccount", fields: [suggestedAccountId], references: [id], onDelete: SetNull)
+  lastUsedAt         DateTime  @default(now())
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  pendingImports     PendingImport[]
 }
 
 // ----------------------------------------------------------------------------

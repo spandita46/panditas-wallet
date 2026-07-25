@@ -300,12 +300,53 @@ export interface DuplicateCandidateDTO {
 // already-normalized rows: flag likely duplicates against existing data, then
 // commit. One account per import, matching how a bank export actually works.
 
-const importRowSchema = z.object({
+export type ImportDateFormat = "YYYY-MM-DD" | "MM/DD/YYYY" | "DD/MM/YYYY";
+export type ImportAmountMode = "single" | "debit_credit";
+
+// Pure column-value parsers, shared between the client's manual-mapping
+// preview (Import.tsx) and the server's folder-sync normalize.ts — keeping
+// these in one place means a cache-hit CSV mapping applied server-side can't
+// silently drift from what a human doing the same mapping by hand would get.
+export function parseDateValue(raw: string, format: ImportDateFormat): string | null {
+  const s = raw.trim();
+  if (!s) return null;
+  const parts = format === "YYYY-MM-DD" ? s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/) : s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (!parts) return null;
+  const a = Number(parts[1]!);
+  const b = Number(parts[2]!);
+  const c = Number(parts[3]!);
+  let y: number, m: number, d: number;
+  if (format === "YYYY-MM-DD") {
+    y = a;
+    m = b;
+    d = c;
+  } else if (format === "MM/DD/YYYY") {
+    m = a;
+    d = b;
+    y = c;
+  } else {
+    d = a;
+    m = b;
+    y = c;
+  }
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+export function parseAmountValue(raw: string): number | null {
+  const cleaned = raw.trim().replace(/[$,\s]/g, "").replace(/^\((.*)\)$/, "-$1");
+  if (cleaned === "" || cleaned === "-") return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
+export const importRowSchema = z.object({
   postedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "postedAt must be YYYY-MM-DD"),
   amount: z.number().refine((n) => n !== 0, "amount must not be 0"),
   payee: z.string().max(200).nullable().optional(),
   memo: z.string().max(500).nullable().optional(),
 });
+export type ImportRow = z.infer<typeof importRowSchema>;
 
 export const importPreviewSchema = z.object({
   accountId: z.string().min(1),
@@ -338,6 +379,41 @@ export interface ImportCommitResponse {
   imported: number;
   recategorized: number;
 }
+
+// ----------------------------------------------------------------------------
+// Folder sync (agent-assisted transaction import)
+// ----------------------------------------------------------------------------
+
+export type FolderSyncFileType = "csv" | "xlsx" | "pdf";
+export type FolderSyncStatus = "needs_review" | "needs_account" | "parse_failed" | "committed" | "rejected";
+export type FolderSyncMappingSource = "cache_hit" | "agent";
+
+export interface PendingImportSummary {
+  id: string;
+  fileName: string;
+  fileType: FolderSyncFileType;
+  status: FolderSyncStatus;
+  mappingSource: FolderSyncMappingSource;
+  accountId: string | null;
+  accountLabel: string | null;
+  confidence: number | null;
+  notes: string | null;
+  errorMessage: string | null;
+  rowCount: number;
+  createdAt: string;
+  reviewedAt: string | null;
+}
+
+export interface PendingImportDetail extends PendingImportSummary {
+  // Recomputed live on every load (and on an account override) — never persisted.
+  preview: ImportPreviewResponse;
+}
+
+export const folderSyncApproveSchema = z.object({
+  accountId: z.string().min(1),
+  rows: z.array(importRowSchema).min(1).max(2000),
+});
+export type FolderSyncApproveInput = z.infer<typeof folderSyncApproveSchema>;
 
 export interface NetWorthSummary {
   currency: string;

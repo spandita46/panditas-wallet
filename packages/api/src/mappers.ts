@@ -1,9 +1,13 @@
-import type { Account, Institution, Prisma, Transaction } from "@prisma/client";
+import type { Account, Institution, PendingImport, Prisma, Transaction } from "@prisma/client";
 import {
   isLiability,
   type AccountDTO,
   type AccountType,
   type Beneficiary,
+  type FolderSyncFileType,
+  type FolderSyncMappingSource,
+  type FolderSyncStatus,
+  type PendingImportSummary,
   type TransactionDTO,
 } from "@panditas/shared";
 
@@ -78,5 +82,25 @@ export function toTransactionDTO(
     transferAccountId: txn.transferAccountId,
     transferAccountName: txn.transferAccount ? (txn.transferAccount.label ?? txn.transferAccount.name) : null,
     billStatus: txn.billStatus,
+  };
+}
+
+export function toPendingImportSummaryDTO(
+  pending: PendingImport & { account?: { name: string; label: string | null } | null },
+): PendingImportSummary {
+  return {
+    id: pending.id,
+    fileName: pending.fileName,
+    fileType: pending.fileType as FolderSyncFileType,
+    status: pending.status as FolderSyncStatus,
+    mappingSource: pending.mappingSource as FolderSyncMappingSource,
+    accountId: pending.accountId,
+    accountLabel: pending.account ? (pending.account.label ?? pending.account.name) : null,
+    confidence: pending.confidence,
+    notes: pending.notes,
+    errorMessage: pending.errorMessage,
+    rowCount: Array.isArray(pending.rows) ? pending.rows.length : 0,
+    createdAt: pending.createdAt.toISOString(),
+    reviewedAt: pending.reviewedAt?.toISOString() ?? null,
   };
 }

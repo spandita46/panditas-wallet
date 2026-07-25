@@ -10,6 +10,7 @@ import { budgetRoutes } from "./routes/budgets.js";
 import { categoryRoutes } from "./routes/categories.js";
 import { insightsRoutes } from "./routes/insights.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { folderSyncRoutes } from "./routes/folderSync.js";
 import { notificationRoutes } from "./routes/notifications.js";
 import { piggyBankRoutes } from "./routes/piggybank.js";
 import { simplefinRoutes } from "./routes/simplefin.js";
@@ -35,6 +36,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(categoryRoutes, { prefix: "/api/categories" });
   await app.register(budgetRoutes, { prefix: "/api/budgets" });
   await app.register(insightsRoutes, { prefix: "/api/insights" });
+  await app.register(folderSyncRoutes, { prefix: "/api/folder-sync" });
 
   // Single-port deploy: also serve the built web app (LAN / NAS).
   if (env.SERVE_WEB) {

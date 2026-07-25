@@ -46,6 +46,23 @@ const envSchema = z.object({
   NOTIFY_EMAIL_TO: z.string().optional(),
   // Used only to build a link back to the app in notification emails.
   APP_URL: z.string().optional(),
+
+  // ---- Folder sync (agent-assisted import) ----
+  // Absolute path to scan for dropped bank export files. No default — unset
+  // disables the feature; the scan route 400s with a clear message.
+  FOLDER_SYNC_DIR: z.string().optional(),
+  // Plain env var, NOT routed through crypto.ts (that pattern is for per-record
+  // DB secrets like SimpleFIN tokens) — this is one static server credential,
+  // same treatment as SMTP_PASS.
+  ANTHROPIC_API_KEY: z.string().optional(),
+  // Model for CSV/XLSX column-mapping + account classification (cheap path).
+  ANTHROPIC_MODEL_TEXT: z.string().optional(),
+  // Model for PDF statement transcription — may need to be pricier/more capable
+  // than the text path for accurate transcription.
+  ANTHROPIC_MODEL_PDF: z.string().optional(),
+  // Cap on file size sent to the agent, protects against a pathological export
+  // blowing context/cost.
+  FOLDER_SYNC_MAX_FILE_MB: z.coerce.number().default(20),
 });
 
 export const env = envSchema.parse(process.env);

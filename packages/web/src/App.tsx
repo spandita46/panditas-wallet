@@ -7,6 +7,7 @@ import { SettingsPage } from "./pages/Settings";
 import { UsersPage } from "./pages/Users";
 import { TransactionsPage } from "./pages/Transactions";
 import { ImportPage } from "./pages/Import";
+import { FolderSyncPage } from "./pages/FolderSyncPage";
 import { BudgetPage } from "./pages/Budget";
 import { KidHomePage } from "./pages/KidHome";
 
@@ -46,6 +47,7 @@ export function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/users" element={<UsersPage />} />
             <Route path="/import" element={<ImportPage />} />
+            <Route path="/import/folder-sync" element={<FolderSyncPage />} />
           </>
         )}
       </Route>
