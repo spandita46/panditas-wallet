@@ -14,10 +14,15 @@ import { Combobox, type ComboboxItem } from "../ui/Combobox";
 
 // Excludes merged accounts — a merged-away account is retired, never a
 // meaningful target for a new rule.
-function accountOptions(accounts: AccountDTO[], placeholder: string): ComboboxItem[] {
+function accountOptions(
+  accounts: AccountDTO[],
+  placeholder: string,
+): ComboboxItem[] {
   return [
     { value: "", label: placeholder },
-    ...accounts.filter((a) => !a.mergedIntoId).map((a) => ({ value: a.id, label: a.displayName })),
+    ...accounts
+      .filter((a) => !a.mergedIntoId)
+      .map((a) => ({ value: a.id, label: a.displayName })),
   ];
 }
 
@@ -29,20 +34,36 @@ export interface ConditionDraft {
   maxAmount: string;
 }
 export function emptyCondition(): ConditionDraft {
-  return { type: "payee_contains", matchAccountId: "", pattern: "", minAmount: "", maxAmount: "" };
+  return {
+    type: "payee_contains",
+    matchAccountId: "",
+    pattern: "",
+    minAmount: "",
+    maxAmount: "",
+  };
 }
 export function conditionValid(c: ConditionDraft): boolean {
   if (c.type === "account") return !!c.matchAccountId;
-  if (c.type === "amount_range") return c.minAmount.trim() !== "" || c.maxAmount.trim() !== "";
+  if (c.type === "amount_range")
+    return c.minAmount.trim() !== "" || c.maxAmount.trim() !== "";
   return c.pattern.trim().length > 0;
 }
 export function toConditionPayload(c: ConditionDraft) {
   return {
     type: c.type,
     matchAccountId: c.type === "account" ? c.matchAccountId : undefined,
-    pattern: c.type === "payee_contains" || c.type === "description_regex" ? c.pattern.trim() : undefined,
-    minAmount: c.type === "amount_range" && c.minAmount.trim() !== "" ? Number(c.minAmount) : undefined,
-    maxAmount: c.type === "amount_range" && c.maxAmount.trim() !== "" ? Number(c.maxAmount) : undefined,
+    pattern:
+      c.type === "payee_contains" || c.type === "description_regex"
+        ? c.pattern.trim()
+        : undefined,
+    minAmount:
+      c.type === "amount_range" && c.minAmount.trim() !== ""
+        ? Number(c.minAmount)
+        : undefined,
+    maxAmount:
+      c.type === "amount_range" && c.maxAmount.trim() !== ""
+        ? Number(c.maxAmount)
+        : undefined,
   };
 }
 
@@ -55,7 +76,14 @@ export interface RuleFormState {
   beneficiaryUserId: string;
 }
 export function emptyRuleForm(): RuleFormState {
-  return { categoryId: "", logic: "all", conditions: [emptyCondition()], linkedAccountId: "", beneficiary: null, beneficiaryUserId: "" };
+  return {
+    categoryId: "",
+    logic: "all",
+    conditions: [emptyCondition()],
+    linkedAccountId: "",
+    beneficiary: null,
+    beneficiaryUserId: "",
+  };
 }
 export function ruleFormFromDTO(r: CategoryRuleDTO): RuleFormState {
   return {
@@ -74,7 +102,9 @@ export function ruleFormFromDTO(r: CategoryRuleDTO): RuleFormState {
   };
 }
 
-export function summarizeCondition(c: CategoryRuleDTO["conditions"][number]): string {
+export function summarizeCondition(
+  c: CategoryRuleDTO["conditions"][number],
+): string {
   switch (c.type) {
     case "account":
       return `Account is ${c.matchAccountName ?? "?"}`;
@@ -83,14 +113,17 @@ export function summarizeCondition(c: CategoryRuleDTO["conditions"][number]): st
     case "description_regex":
       return `Description matches "${c.pattern}"`;
     case "amount_range":
-      if (c.minAmount != null && c.maxAmount != null) return `Amount $${c.minAmount}–$${c.maxAmount}`;
+      if (c.minAmount != null && c.maxAmount != null)
+        return `Amount $${c.minAmount}–$${c.maxAmount}`;
       if (c.minAmount != null) return `Amount ≥ $${c.minAmount}`;
       if (c.maxAmount != null) return `Amount ≤ $${c.maxAmount}`;
       return "Amount (any)";
   }
 }
 export function summarizeRule(r: CategoryRuleDTO): string {
-  return r.conditions.map(summarizeCondition).join(r.logic === "any" ? " OR " : " AND ");
+  return r.conditions
+    .map(summarizeCondition)
+    .join(r.logic === "any" ? " OR " : " AND ");
 }
 
 const CONDITION_TYPE_LABEL: Record<RuleConditionType, string> = {
@@ -101,7 +134,8 @@ const CONDITION_TYPE_LABEL: Record<RuleConditionType, string> = {
 };
 
 function amountRangeLabel(c: CategoryRuleDTO["conditions"][number]): string {
-  if (c.minAmount != null && c.maxAmount != null) return `$${c.minAmount}–$${c.maxAmount}`;
+  if (c.minAmount != null && c.maxAmount != null)
+    return `$${c.minAmount}–$${c.maxAmount}`;
   if (c.minAmount != null) return `≥ $${c.minAmount}`;
   if (c.maxAmount != null) return `≤ $${c.maxAmount}`;
   return "any";
@@ -111,7 +145,10 @@ function amountRangeLabel(c: CategoryRuleDTO["conditions"][number]): string {
 // merge) — grouping by type and listing values as bullets reads far better
 // than one long "X OR Y OR Z OR ..." sentence.
 export function RuleConditionsDisplay({ rule }: { rule: CategoryRuleDTO }) {
-  const groups: { type: RuleConditionType; items: CategoryRuleDTO["conditions"] }[] = [];
+  const groups: {
+    type: RuleConditionType;
+    items: CategoryRuleDTO["conditions"];
+  }[] = [];
   for (const c of rule.conditions) {
     const last = groups[groups.length - 1];
     if (last && last.type === c.type) last.items.push(c);
@@ -123,10 +160,14 @@ export function RuleConditionsDisplay({ rule }: { rule: CategoryRuleDTO }) {
     <div className="space-y-1 text-sm">
       {groups.map((g, gi) => (
         <div key={gi}>
-          {gi > 0 && <div className="text-xs font-semibold text-slate-400">{joiner}</div>}
+          {gi > 0 && (
+            <div className="text-xs font-semibold text-slate-400">{joiner}</div>
+          )}
           <div className="text-slate-700">
             {CONDITION_TYPE_LABEL[g.type]}
-            {g.items.length > 1 ? ` ${rule.logic === "any" ? "any" : "all"} of the following:` : ":"}
+            {g.items.length > 1
+              ? ` ${rule.logic === "any" ? "any" : "all"} of the following:`
+              : ":"}
           </div>
           <ul className="ml-3 list-disc space-y-0.5 text-slate-600">
             {g.items.map((c) => (
@@ -158,23 +199,24 @@ export function ConditionEditor({
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-2">
-      <select
-        value={condition.type}
-        onChange={(e) => onChange({ ...condition, type: e.target.value as RuleConditionType })}
-        className="input max-w-[10rem]"
-      >
-        {RULE_CONDITION_TYPES.map((t) => (
-          <option key={t} value={t}>
-            {t === "account"
+      <Combobox
+        options={RULE_CONDITION_TYPES.map((t) => ({
+          value: t,
+          label:
+            t === "account"
               ? "Account is"
               : t === "payee_contains"
                 ? "Payee contains"
                 : t === "description_regex"
                   ? "Description matches"
-                  : "Amount between"}
-          </option>
-        ))}
-      </select>
+                  : "Amount between",
+        }))}
+        value={condition.type}
+        onChange={(v) =>
+          onChange({ ...condition, type: v as RuleConditionType })
+        }
+        className="w-40"
+      />
       {condition.type === "account" ? (
         <Combobox
           options={accountOptions(accounts, "Account…")}
@@ -187,7 +229,9 @@ export function ConditionEditor({
           <input
             type="number"
             value={condition.minAmount}
-            onChange={(e) => onChange({ ...condition, minAmount: e.target.value })}
+            onChange={(e) =>
+              onChange({ ...condition, minAmount: e.target.value })
+            }
             placeholder="Min $"
             className="input w-24"
           />
@@ -195,7 +239,9 @@ export function ConditionEditor({
           <input
             type="number"
             value={condition.maxAmount}
-            onChange={(e) => onChange({ ...condition, maxAmount: e.target.value })}
+            onChange={(e) =>
+              onChange({ ...condition, maxAmount: e.target.value })
+            }
             placeholder="Max $ (optional)"
             className="input w-28"
           />
@@ -209,7 +255,11 @@ export function ConditionEditor({
         />
       )}
       {onRemove && (
-        <button onClick={onRemove} className="text-xs text-slate-400 hover:text-slate-600" title="Remove condition">
+        <button
+          onClick={onRemove}
+          className="text-xs text-slate-400 hover:text-slate-600"
+          title="Remove condition"
+        >
           ✕
         </button>
       )}

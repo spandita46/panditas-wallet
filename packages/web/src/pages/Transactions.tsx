@@ -1068,9 +1068,7 @@ function TransactionDetailPanel({
           {JSON.stringify(txn.rawPayload, null, 2)}
         </pre>
       ) : (
-        <p className="text-slate-400">
-          No raw data — entered directly.
-        </p>
+        <p className="text-slate-400">No raw data — entered directly.</p>
       )}
 
       <div className="mt-2 flex items-center gap-2">
@@ -1102,7 +1100,10 @@ function TransactionDetailPanel({
             </button>
           )
         ) : (
-          <span className="text-slate-400" title="Only an admin can delete a synced or imported transaction">
+          <span
+            className="text-slate-400"
+            title="Only an admin can delete a synced or imported transaction"
+          >
             Delete requires admin
           </span>
         )}
@@ -1312,14 +1313,19 @@ function CreateRuleForm({
     conditions: [
       txn.payee
         ? { ...emptyCondition(), type: "payee_contains", pattern: txn.payee }
-        : { ...emptyCondition(), type: "account", matchAccountId: txn.accountId },
+        : {
+            ...emptyCondition(),
+            type: "account",
+            matchAccountId: txn.accountId,
+          },
     ],
     linkedAccountId: txn.transferAccountId ?? "",
     beneficiary: null,
     beneficiaryUserId: "",
   }));
 
-  const canCreate = !!ruleForm.categoryId && ruleForm.conditions.every(conditionValid);
+  const canCreate =
+    !!ruleForm.categoryId && ruleForm.conditions.every(conditionValid);
 
   const submit = () => {
     if (!canCreate) return;
@@ -1329,7 +1335,10 @@ function CreateRuleForm({
       conditions: ruleForm.conditions.map(toConditionPayload),
       linkedAccountId: ruleForm.linkedAccountId || undefined,
       beneficiary: ruleForm.beneficiary || undefined,
-      beneficiaryUserId: ruleForm.beneficiary === "family_member" ? (ruleForm.beneficiaryUserId || undefined) : undefined,
+      beneficiaryUserId:
+        ruleForm.beneficiary === "family_member"
+          ? ruleForm.beneficiaryUserId || undefined
+          : undefined,
       priority: 10,
     };
     const txnPatch: Record<string, unknown> = {
@@ -1352,21 +1361,28 @@ function CreateRuleForm({
           className="w-40"
         />
         {ruleForm.conditions.length > 1 && (
-          <select
+          <Combobox
+            options={[
+              { value: "all", label: "All conditions match" },
+              { value: "any", label: "Any condition matches" },
+            ]}
             value={ruleForm.logic}
-            onChange={(e) => setRuleForm({ ...ruleForm, logic: e.target.value as RuleLogic })}
-            className="input w-48"
+            onChange={(v) =>
+              setRuleForm({ ...ruleForm, logic: v as RuleLogic })
+            }
+            className="w-48"
             title="How the conditions below combine"
-          >
-            <option value="all">All conditions match</option>
-            <option value="any">Any condition matches</option>
-          </select>
+          />
         )}
         <Combobox
-          options={accountOptions(accounts, "Links to account… (optional)", txn.accountId)}
+          options={accountOptions(
+            accounts,
+            "Links to account… (optional)",
+            txn.accountId,
+          )}
           value={ruleForm.linkedAccountId}
           onChange={(v) => setRuleForm({ ...ruleForm, linkedAccountId: v })}
-          className="w-48"
+          className="w-60"
         />
       </div>
 
@@ -1376,11 +1392,20 @@ function CreateRuleForm({
           condition={condition}
           accounts={accounts}
           onChange={(next) =>
-            setRuleForm({ ...ruleForm, conditions: ruleForm.conditions.map((c, ci) => (ci === i ? next : c)) })
+            setRuleForm({
+              ...ruleForm,
+              conditions: ruleForm.conditions.map((c, ci) =>
+                ci === i ? next : c,
+              ),
+            })
           }
           onRemove={
             ruleForm.conditions.length > 1
-              ? () => setRuleForm({ ...ruleForm, conditions: ruleForm.conditions.filter((_, ci) => ci !== i) })
+              ? () =>
+                  setRuleForm({
+                    ...ruleForm,
+                    conditions: ruleForm.conditions.filter((_, ci) => ci !== i),
+                  })
               : undefined
           }
         />
@@ -1388,13 +1413,21 @@ function CreateRuleForm({
 
       <div className="flex items-center justify-between gap-3">
         <button
-          onClick={() => setRuleForm({ ...ruleForm, conditions: [...ruleForm.conditions, emptyCondition()] })}
+          onClick={() =>
+            setRuleForm({
+              ...ruleForm,
+              conditions: [...ruleForm.conditions, emptyCondition()],
+            })
+          }
           className="text-xs text-accent-600 hover:underline"
         >
           + Add condition
         </button>
         <div className="flex gap-3">
-          <button onClick={onCancel} className="text-xs text-slate-500 underline">
+          <button
+            onClick={onCancel}
+            className="text-xs text-slate-500 underline"
+          >
             Cancel
           </button>
           <button
@@ -1641,7 +1674,10 @@ function AddTransactionForm({
             <label className="text-xs font-medium text-slate-600">
               Coverage
               <Combobox
-                options={BILL_STATUSES.map((s) => ({ value: s, label: BILL_STATUS_LABELS[s] }))}
+                options={BILL_STATUSES.map((s) => ({
+                  value: s,
+                  label: BILL_STATUS_LABELS[s],
+                }))}
                 value={billStatus}
                 onChange={(v) => setBillStatus(v as BillStatus)}
                 className="mt-1 w-28"
