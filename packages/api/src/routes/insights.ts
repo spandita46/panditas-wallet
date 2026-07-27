@@ -10,7 +10,19 @@ const monthQuerySchema = z.object({
 });
 
 const timeseriesQuerySchema = z.object({
-  months: z.coerce.number().int().min(1).max(12).default(3),
+  months: z.coerce.number().int().min(1).max(12).optional(),
+  // Exact rolling day-count window (e.g. the Dashboard trend chart's Day
+  // granularity wants precisely "last 30 days", which calendar-month
+  // subtraction can't guarantee — months are 28-31 days long).
+  days: z.coerce.number().int().min(1).max(366).optional(),
+  // Anchors the window to a specific calendar month (e.g. for the Dashboard
+  // heatmap paging back to January) instead of the rolling "last N
+  // days/months from now" window `days`/`months` give the trend chart.
+  // Precedence when more than one is given: month > days > months.
+  month: z
+    .string()
+    .regex(/^\d{4}-\d{2}-01$/, "month must be YYYY-MM-01")
+    .optional(),
 });
 
 export async function insightsRoutes(app: FastifyInstance): Promise<void> {
@@ -84,13 +96,28 @@ export async function insightsRoutes(app: FastifyInstance): Promise<void> {
     const parsed = timeseriesQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid query" });
 
-    const end = new Date();
-    const start = new Date(end);
-    start.setMonth(start.getMonth() - parsed.data.months);
+    let start: Date;
+    let end: Date;
+    let endExclusive: boolean;
+    if (parsed.data.month) {
+      start = new Date(`${parsed.data.month}T00:00:00.000Z`);
+      end = new Date(start);
+      end.setUTCMonth(end.getUTCMonth() + 1);
+      endExclusive = true;
+    } else if (parsed.data.days) {
+      end = new Date();
+      start = new Date(end.getTime() - parsed.data.days * 24 * 60 * 60 * 1000);
+      endExclusive = false;
+    } else {
+      end = new Date();
+      start = new Date(end);
+      start.setMonth(start.getMonth() - (parsed.data.months ?? 3));
+      endExclusive = false;
+    }
 
     const txns = await prisma.transaction.findMany({
       where: {
-        postedAt: { gte: start, lte: end },
+        postedAt: endExclusive ? { gte: start, lt: end } : { gte: start, lte: end },
         account: { isTracked: true, isClosed: false },
         NOT: { category: { kind: "transfer" } },
       },

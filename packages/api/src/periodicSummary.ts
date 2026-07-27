@@ -1,4 +1,4 @@
-import { formatMoney } from "@panditas/shared";
+import { formatMoney, type TxnSource } from "@panditas/shared";
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { sendMail } from "./mailer.js";
@@ -109,7 +109,7 @@ export interface UpcomingBillPayment {
   id: string;
   postedAt: Date;
   amount: number;
-  source: "manual" | "simplefin";
+  source: TxnSource;
   billStatus: "full" | "partial" | null;
 }
 

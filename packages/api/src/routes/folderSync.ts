@@ -96,7 +96,7 @@ export async function folderSyncRoutes(app: FastifyInstance): Promise<void> {
     const account = await prisma.account.findUnique({ where: { id: accountId } });
     if (!account) return reply.code(404).send({ error: "Account not found" });
 
-    const response = await commitImportRows(accountId, rows);
+    const response = await commitImportRows(accountId, rows, "import_folder_sync");
 
     await prisma.pendingImport.update({
       where: { id },

@@ -1,4 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import type { TransactionAnomalyDTO } from "@panditas/shared";
 import { api } from "../api";
 import { useAuth } from "../auth";
 import { APP_NAME } from "../appName";
@@ -6,6 +8,15 @@ import { NotificationBell } from "./NotificationBell";
 
 export function Layout() {
   const { user, refresh } = useAuth();
+
+  // Same polling pattern as NotificationBell — cheap, family-LAN-app cadence.
+  const { data: openAnomalies } = useQuery({
+    queryKey: ["transaction-anomalies", "open"],
+    queryFn: () => api.get<TransactionAnomalyDTO[]>("/review/anomalies?status=open"),
+    refetchInterval: 60_000,
+    enabled: user?.role === "admin",
+  });
+  const openAnomalyCount = openAnomalies?.length ?? 0;
 
   async function logout() {
     await api.post("/auth/logout");
@@ -43,6 +54,14 @@ export function Layout() {
                   </NavLink>
                   <NavLink to="/import" className={linkClass}>
                     Import
+                  </NavLink>
+                  <NavLink to="/review" className={linkClass}>
+                    Review
+                    {openAnomalyCount > 0 && (
+                      <span className="ml-1.5 inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-accent-600 px-1 text-[10px] font-semibold text-white">
+                        {openAnomalyCount}
+                      </span>
+                    )}
                   </NavLink>
                 </>
               )}

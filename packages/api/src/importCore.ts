@@ -3,6 +3,7 @@
 // which just supply already-normalized rows from a different source.
 import { recategorizeAll } from "./categorize.js";
 import { prisma } from "./db.js";
+import { detectAnomalies } from "./anomalyDetection.js";
 import type { ImportCommitResponse, ImportPreviewResponse, ImportRow } from "@panditas/shared";
 
 // Flags likely duplicates (same account, date, amount) for the user to review
@@ -10,10 +11,14 @@ import type { ImportCommitResponse, ImportPreviewResponse, ImportRow } from "@pa
 // to match on.
 export async function previewImportRows(accountId: string, rows: ImportRow[]): Promise<ImportPreviewResponse> {
   const dates = rows.map((r) => new Date(`${r.postedAt}T00:00:00.000Z`));
+  // deletedAt: undefined opts out of the soft-delete filter (see db.ts) — a
+  // deliberately-removed transaction should still flag a re-import as a
+  // duplicate, not silently look like fresh data.
   const existing = await prisma.transaction.findMany({
     where: {
       accountId,
       postedAt: { gte: new Date(Math.min(...dates.map((d) => d.getTime()))), lte: new Date(Math.max(...dates.map((d) => d.getTime()))) },
+      deletedAt: undefined,
     },
     select: { postedAt: true, amount: true },
   });
@@ -37,7 +42,11 @@ export async function previewImportRows(accountId: string, rows: ImportRow[]): P
 // Historical backfill only — deliberately does NOT touch currentBalance/
 // BalanceSnapshot, since the account's current balance is already correct
 // from sync (or manual edits) and isn't affected by filling in older history.
-export async function commitImportRows(accountId: string, rows: ImportRow[]): Promise<ImportCommitResponse> {
+export async function commitImportRows(
+  accountId: string,
+  rows: ImportRow[],
+  source: "import_single" | "import_folder_sync",
+): Promise<ImportCommitResponse> {
   await prisma.transaction.createMany({
     data: rows.map((r) => ({
       accountId,
@@ -45,10 +54,12 @@ export async function commitImportRows(accountId: string, rows: ImportRow[]): Pr
       amount: r.amount,
       payee: r.payee ?? null,
       memo: r.memo ?? null,
-      source: "manual" as const,
+      rawPayload: r as object,
+      source,
     })),
   });
   const recategorized = await recategorizeAll(true);
+  detectAnomalies().catch((err) => console.error("[anomalyDetection] post-import run failed:", err));
 
   return { imported: rows.length, recategorized };
 }

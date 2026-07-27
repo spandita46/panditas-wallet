@@ -37,6 +37,12 @@ interface SyncSummary {
 
 type Granularity = "day" | "week" | "month";
 
+const TREND_WINDOW: Record<Granularity, { queryParam: string; label: string }> = {
+  day: { queryParam: "days=30", label: "Last 30 days" },
+  week: { queryParam: "months=3", label: "Last 3 months" },
+  month: { queryParam: "months=6", label: "Last 6 months" },
+};
+
 export function DashboardPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -47,9 +53,22 @@ export function DashboardPage() {
     queryKey: ["dashboard"],
     queryFn: () => api.get<DashboardSummary>("/dashboard/summary"),
   });
+  // Each granularity needs a different amount of history — the query itself
+  // now depends on granularity (previously fixed at ?months=3, so switching
+  // to Month never showed more than 3 of the 6 months it should).
+  const trendWindow = TREND_WINDOW[granularity];
   const timeseries = useQuery({
-    queryKey: ["insights-timeseries"],
-    queryFn: () => api.get<DailyFlowPoint[]>("/insights/timeseries?months=3"),
+    queryKey: ["insights-timeseries", "trend", granularity],
+    queryFn: () => api.get<DailyFlowPoint[]>(`/insights/timeseries?${trendWindow.queryParam}`),
+  });
+  // The heatmap can page back to any month, independent of the trend chart's
+  // rolling recent window above — fetch just the viewed month rather than
+  // relying on the last-3-months data, which left cells blank for anything
+  // older (e.g. January/February when "now" is well into the second half of
+  // the year).
+  const heatmapData = useQuery({
+    queryKey: ["insights-timeseries", "month", heatmapMonth],
+    queryFn: () => api.get<DailyFlowPoint[]>(`/insights/timeseries?month=${heatmapMonth}`),
   });
 
   const sync = useMutation({
@@ -123,7 +142,7 @@ export function DashboardPage() {
               Spending vs income — by day
             </SectionHeader>
             <Card className="overflow-visible">
-              <CalendarHeatmap month={heatmapMonth} points={timeseries.data ?? []} />
+              <CalendarHeatmap month={heatmapMonth} points={heatmapData.data ?? []} />
             </Card>
           </section>
 
@@ -142,6 +161,7 @@ export function DashboardPage() {
               }
             >
               Spending vs income — trend
+              <span className="ml-2 text-xs font-normal text-slate-400">{trendWindow.label}</span>
             </SectionHeader>
             <Card>
               <TrendChart
@@ -297,42 +317,86 @@ function startOfWeek(d: Date): Date {
   return copy;
 }
 
+// Zero-fills every day/week/month in the requested window, not just the ones
+// with activity — otherwise "last 30 days" can silently render as 18 bars on
+// a household with quiet days, which looks broken in a different way than
+// the bug this replaced.
 function bucketFlow(points: DailyFlowPoint[], granularity: Granularity): TrendPoint[] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
   if (granularity === "day") {
-    return points.slice(-30).map((p) => ({
-      label: shortDayLabel(p.date),
-      income: p.income,
-      expense: p.expense,
-      sortKey: p.date,
-      rangeFrom: p.date,
-      rangeTo: p.date,
-    }));
+    const byDate = new Map(points.map((p) => [p.date, p]));
+    return Array.from({ length: 30 }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (29 - i));
+      const key = toDateKey(d);
+      const p = byDate.get(key);
+      return {
+        label: shortDayLabel(key),
+        income: p?.income ?? 0,
+        expense: p?.expense ?? 0,
+        sortKey: key,
+        rangeFrom: key,
+        rangeTo: key,
+      };
+    });
   }
 
-  const buckets = new Map<string, TrendPoint>();
-  for (const p of points) {
-    if (granularity === "week") {
-      const weekStart = startOfWeek(new Date(`${p.date}T00:00:00`));
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
-      const key = toDateKey(weekStart);
-      const entry =
-        buckets.get(key) ??
-        { label: shortDayLabel(key), income: 0, expense: 0, sortKey: key, rangeFrom: key, rangeTo: toDateKey(weekEnd) };
+  if (granularity === "week") {
+    const byWeek = new Map<string, { income: number; expense: number }>();
+    for (const p of points) {
+      const key = toDateKey(startOfWeek(new Date(`${p.date}T00:00:00`)));
+      const entry = byWeek.get(key) ?? { income: 0, expense: 0 };
       entry.income += p.income;
       entry.expense += p.expense;
-      buckets.set(key, entry);
-    } else {
-      const key = p.date.slice(0, 7);
-      const entry =
-        buckets.get(key) ??
-        { label: shortMonthLabel(key), income: 0, expense: 0, sortKey: key, rangeFrom: `${key}-01`, rangeTo: monthEndDate(`${key}-01`) };
-      entry.income += p.income;
-      entry.expense += p.expense;
-      buckets.set(key, entry);
+      byWeek.set(key, entry);
     }
+    const windowStart = new Date(today);
+    windowStart.setMonth(windowStart.getMonth() - 3);
+    const firstWeek = startOfWeek(windowStart);
+    const lastWeek = startOfWeek(today);
+    const weeks: TrendPoint[] = [];
+    for (let ws = new Date(firstWeek); ws <= lastWeek; ws.setDate(ws.getDate() + 7)) {
+      const key = toDateKey(ws);
+      const weekEnd = new Date(ws);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      const entry = byWeek.get(key) ?? { income: 0, expense: 0 };
+      weeks.push({
+        label: `${shortDayLabel(key)}–${shortDayLabel(toDateKey(weekEnd))}`,
+        income: entry.income,
+        expense: entry.expense,
+        sortKey: key,
+        rangeFrom: key,
+        rangeTo: toDateKey(weekEnd),
+      });
+    }
+    return weeks;
   }
-  return [...buckets.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+
+  const byMonth = new Map<string, { income: number; expense: number }>();
+  for (const p of points) {
+    const key = p.date.slice(0, 7);
+    const entry = byMonth.get(key) ?? { income: 0, expense: 0 };
+    entry.income += p.income;
+    entry.expense += p.expense;
+    byMonth.set(key, entry);
+  }
+  const months: TrendPoint[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const entry = byMonth.get(key) ?? { income: 0, expense: 0 };
+    months.push({
+      label: shortMonthLabel(key),
+      income: entry.income,
+      expense: entry.expense,
+      sortKey: key,
+      rangeFrom: `${key}-01`,
+      rangeTo: monthEndDate(`${key}-01`),
+    });
+  }
+  return months;
 }
 
 function TrendChart({

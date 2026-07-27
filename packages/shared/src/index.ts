@@ -31,6 +31,18 @@ export const BENEFICIARY_LABELS: Record<Beneficiary, string> = {
   external: "External (gift, etc.)",
 };
 
+// Quick triage filter for the transaction list — independent of (and
+// AND-combined with) the specific-category filter. "uncategorized" here
+// mirrors the category filter's own "Uncategorized" option (categoryId:
+// null) so it can be used on its own without also touching that combobox.
+export const TRANSACTION_FLOW_FILTERS = ["income", "expense", "uncategorized"] as const;
+export type TransactionFlowFilter = (typeof TRANSACTION_FLOW_FILTERS)[number];
+export const TRANSACTION_FLOW_FILTER_LABELS: Record<TransactionFlowFilter, string> = {
+  income: "Income",
+  expense: "Expense",
+  uncategorized: "Uncategorized",
+};
+
 // Self-reported at manual-entry time — the app never infers this from data
 // (would need the actual statement total, which SimpleFIN doesn't give us).
 export const BILL_STATUSES = ["full", "partial"] as const;
@@ -161,7 +173,14 @@ export interface AccountDTO {
   suppressTransactionSync: boolean;
 }
 
-export type TxnSource = "simplefin" | "manual";
+export type TxnSource = "simplefin" | "manual" | "import_single" | "import_folder_sync";
+
+export const TXN_SOURCE_LABELS: Record<TxnSource, string> = {
+  manual: "Manual",
+  simplefin: "Sync",
+  import_single: "File Upload",
+  import_folder_sync: "File Upload (Bulk)",
+};
 
 export interface TransactionDTO {
   id: string;
@@ -172,9 +191,13 @@ export interface TransactionDTO {
   payee: string | null;
   description: string | null;
   pending: boolean;
-  // "manual" transactions can be edited/deleted directly; synced ones can't
-  // (they'd just reappear on the next sync).
+  // "manual" transactions can be edited directly by admin/adult; deleting any
+  // source is supported (soft delete), but non-manual sources are admin-only.
   source: TxnSource;
+  // Raw source data behind this row — SimpleFIN's per-transaction payload for
+  // synced rows, the mapped import row for imported rows, null for manual
+  // (hand-typed) rows. Not backfilled for rows created before this existed.
+  rawPayload: unknown | null;
   categoryId: string | null;
   categoryName: string | null;
   beneficiary: Beneficiary | null;
@@ -415,6 +438,43 @@ export const folderSyncApproveSchema = z.object({
 });
 export type FolderSyncApproveInput = z.infer<typeof folderSyncApproveSchema>;
 
+// ----------------------------------------------------------------------------
+// Transaction review (anomaly detection)
+// ----------------------------------------------------------------------------
+
+export type AnomalyStatus = "open" | "dismissed" | "resolved";
+
+// A lightweight summary of one side of a flagged anomaly — enough to show in
+// a review-queue row without a second round-trip per transaction.
+export interface AnomalyTransactionSummary {
+  id: string;
+  accountId: string;
+  accountName: string;
+  postedAt: string;
+  amount: number;
+  payee: string | null;
+  source: TxnSource;
+  deletedAt: string | null;
+}
+
+export interface TransactionAnomalyDTO {
+  id: string;
+  kind: string;
+  detail: string;
+  status: AnomalyStatus;
+  detectedAt: string;
+  reviewedAt: string | null;
+  reviewedByUserId: string | null;
+  reviewedByName: string | null;
+  resolutionNote: string | null;
+  transactions: AnomalyTransactionSummary[];
+}
+
+export const resolveAnomalySchema = z.object({
+  note: z.string().max(500).optional(),
+});
+export type ResolveAnomalyInput = z.infer<typeof resolveAnomalySchema>;
+
 export interface NetWorthSummary {
   currency: string;
   assets: number;
@@ -482,7 +542,7 @@ export interface BillPaymentDTO {
   id: string;
   postedAt: string;
   amount: number;
-  source: "manual" | "simplefin";
+  source: TxnSource;
   billStatus: BillStatus | null;
 }
 
@@ -568,6 +628,9 @@ export interface CategoryRuleDTO {
   beneficiary: Beneficiary | null;
   beneficiaryUserId: string | null;
   beneficiaryName: string | null;
+  // How many transactions currently have Transaction.taggedByRuleId === this
+  // rule's id — used to warn before delete and offer to recategorize them.
+  taggedCount: number;
 }
 
 const ruleConditionInputSchema = z
@@ -591,7 +654,10 @@ const ruleConditionInputSchema = z
 export const createCategoryRuleSchema = z.object({
   categoryId: z.string().min(1),
   logic: z.enum(RULE_LOGICS).default("all"),
-  conditions: z.array(ruleConditionInputSchema).min(1).max(10),
+  // Merging several existing rules (each already at up to 10 conditions)
+  // can easily produce more than 10 flattened conditions — this cap only
+  // guards against unbounded input, not the merge use case.
+  conditions: z.array(ruleConditionInputSchema).min(1).max(50),
   priority: z.number().int().default(0),
   linkedAccountId: z.string().nullable().optional(),
   beneficiary: z.enum(BENEFICIARIES).nullable().optional(),
@@ -600,14 +666,22 @@ export const createCategoryRuleSchema = z.object({
 export type CreateCategoryRuleInput = z.infer<typeof createCategoryRuleSchema>;
 
 export const updateCategoryRuleSchema = z.object({
+  categoryId: z.string().min(1).optional(),
   logic: z.enum(RULE_LOGICS).optional(),
-  conditions: z.array(ruleConditionInputSchema).min(1).max(10).optional(),
+  conditions: z.array(ruleConditionInputSchema).min(1).max(50).optional(),
   linkedAccountId: z.string().nullable().optional(),
   priority: z.number().int().optional(),
   beneficiary: z.enum(BENEFICIARIES).nullable().optional(),
   beneficiaryUserId: z.string().nullable().optional(),
 });
 export type UpdateCategoryRuleInput = z.infer<typeof updateCategoryRuleSchema>;
+
+// "__uncategorized__" is a sentinel, matching the convention already used
+// for the category/beneficiary filters elsewhere in this file.
+export const deleteCategoryRuleSchema = z.object({
+  recategorizeTaggedTo: z.string().optional(),
+});
+export type DeleteCategoryRuleInput = z.infer<typeof deleteCategoryRuleSchema>;
 
 export interface BudgetLineDTO {
   categoryId: string;

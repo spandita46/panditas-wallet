@@ -6,7 +6,6 @@ import {
   BENEFICIARY_LABELS,
   CATEGORY_KINDS,
   CATEGORY_KIND_LABELS,
-  RULE_CONDITION_TYPES,
   formatMoney,
   type AccountDTO,
   type Beneficiary,
@@ -15,17 +14,27 @@ import {
   type CategoryKind,
   type CategoryRuleDTO,
   type FamilyMemberDTO,
-  type RuleConditionType,
   type RuleLogic,
   type SpendingBreakdown,
 } from "@panditas/shared";
 import { api } from "../api";
+import { useAuth } from "../auth";
 import { Card } from "../components/ui/Card";
 import { SectionHeader } from "../components/ui/SectionHeader";
 import { Combobox, type ComboboxItem } from "../components/ui/Combobox";
 import { Donut } from "../components/ui/Donut";
 import { monthEndDate, monthKey, monthLabel, shiftMonth } from "../lib/month";
 import { transactionsLink } from "../lib/transactionsLink";
+import {
+  ConditionEditor,
+  RuleConditionsDisplay,
+  conditionValid,
+  emptyCondition,
+  emptyRuleForm,
+  ruleFormFromDTO,
+  toConditionPayload,
+  type RuleFormState,
+} from "../components/rules/RuleForm";
 
 // Categories grouped by kind, expense first (most common), for <optgroup> rendering.
 const KIND_ORDER = ["expense", "income", "transfer"] as const;
@@ -55,135 +64,6 @@ function accountOptions(accounts: AccountDTO[], placeholder: string): ComboboxIt
   ];
 }
 
-// ---- Rule condition builder --------------------------------------------
-
-interface ConditionDraft {
-  type: RuleConditionType;
-  matchAccountId: string;
-  pattern: string;
-  minAmount: string;
-  maxAmount: string;
-}
-function emptyCondition(): ConditionDraft {
-  return { type: "payee_contains", matchAccountId: "", pattern: "", minAmount: "", maxAmount: "" };
-}
-function conditionValid(c: ConditionDraft): boolean {
-  if (c.type === "account") return !!c.matchAccountId;
-  if (c.type === "amount_range") return c.minAmount.trim() !== "" || c.maxAmount.trim() !== "";
-  return c.pattern.trim().length > 0;
-}
-function toConditionPayload(c: ConditionDraft) {
-  return {
-    type: c.type,
-    matchAccountId: c.type === "account" ? c.matchAccountId : undefined,
-    pattern: c.type === "payee_contains" || c.type === "description_regex" ? c.pattern.trim() : undefined,
-    minAmount: c.type === "amount_range" && c.minAmount.trim() !== "" ? Number(c.minAmount) : undefined,
-    maxAmount: c.type === "amount_range" && c.maxAmount.trim() !== "" ? Number(c.maxAmount) : undefined,
-  };
-}
-
-interface RuleFormState {
-  categoryId: string;
-  logic: RuleLogic;
-  conditions: ConditionDraft[];
-  linkedAccountId: string;
-  beneficiary: Beneficiary | null;
-  beneficiaryUserId: string;
-}
-function emptyRuleForm(): RuleFormState {
-  return { categoryId: "", logic: "all", conditions: [emptyCondition()], linkedAccountId: "", beneficiary: null, beneficiaryUserId: "" };
-}
-
-function summarizeCondition(c: CategoryRuleDTO["conditions"][number]): string {
-  switch (c.type) {
-    case "account":
-      return `Account is ${c.matchAccountName ?? "?"}`;
-    case "payee_contains":
-      return `Payee contains "${c.pattern}"`;
-    case "description_regex":
-      return `Description matches "${c.pattern}"`;
-    case "amount_range":
-      if (c.minAmount != null && c.maxAmount != null) return `Amount $${c.minAmount}–$${c.maxAmount}`;
-      if (c.minAmount != null) return `Amount ≥ $${c.minAmount}`;
-      if (c.maxAmount != null) return `Amount ≤ $${c.maxAmount}`;
-      return "Amount (any)";
-  }
-}
-function summarizeRule(r: CategoryRuleDTO): string {
-  return r.conditions.map(summarizeCondition).join(r.logic === "any" ? " OR " : " AND ");
-}
-
-function ConditionEditor({
-  condition,
-  accounts,
-  onChange,
-  onRemove,
-}: {
-  condition: ConditionDraft;
-  accounts: AccountDTO[];
-  onChange: (c: ConditionDraft) => void;
-  onRemove?: () => void;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 p-2">
-      <select
-        value={condition.type}
-        onChange={(e) => onChange({ ...condition, type: e.target.value as RuleConditionType })}
-        className="input max-w-[10rem]"
-      >
-        {RULE_CONDITION_TYPES.map((t) => (
-          <option key={t} value={t}>
-            {t === "account"
-              ? "Account is"
-              : t === "payee_contains"
-                ? "Payee contains"
-                : t === "description_regex"
-                  ? "Description matches"
-                  : "Amount between"}
-          </option>
-        ))}
-      </select>
-      {condition.type === "account" ? (
-        <Combobox
-          options={accountOptions(accounts, "Account…")}
-          value={condition.matchAccountId}
-          onChange={(v) => onChange({ ...condition, matchAccountId: v })}
-          className="max-w-[12rem]"
-        />
-      ) : condition.type === "amount_range" ? (
-        <>
-          <input
-            type="number"
-            value={condition.minAmount}
-            onChange={(e) => onChange({ ...condition, minAmount: e.target.value })}
-            placeholder="Min $"
-            className="input w-24"
-          />
-          <span className="text-xs text-slate-400">to</span>
-          <input
-            type="number"
-            value={condition.maxAmount}
-            onChange={(e) => onChange({ ...condition, maxAmount: e.target.value })}
-            placeholder="Max $ (optional)"
-            className="input w-28"
-          />
-        </>
-      ) : (
-        <input
-          value={condition.pattern}
-          onChange={(e) => onChange({ ...condition, pattern: e.target.value })}
-          placeholder="Text to match"
-          className="input max-w-[12rem]"
-        />
-      )}
-      {onRemove && (
-        <button onClick={onRemove} className="text-xs text-slate-400 hover:text-slate-600" title="Remove condition">
-          ✕
-        </button>
-      )}
-    </div>
-  );
-}
 
 export function BudgetPage() {
   const queryClient = useQueryClient();
@@ -521,37 +401,141 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
     onSuccess: invalidate,
   });
 
+  const { user } = useAuth();
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: () => api.get<AccountDTO[]>("/accounts") });
   const rules = useQuery({ queryKey: ["category-rules"], queryFn: () => api.get<CategoryRuleDTO[]>("/categories/rules") });
+  const invalidateRules = () => queryClient.invalidateQueries({ queryKey: ["category-rules"] });
+
   const [ruleForm, setRuleForm] = useState<RuleFormState>(emptyRuleForm());
-  const createRule = useMutation({
-    mutationFn: () =>
-      api.post("/categories/rules", {
-        categoryId: ruleForm.categoryId,
-        logic: ruleForm.logic,
-        conditions: ruleForm.conditions.map(toConditionPayload),
-        linkedAccountId: ruleForm.linkedAccountId || undefined,
-        beneficiary: ruleForm.beneficiary || undefined,
-        beneficiaryUserId: ruleForm.beneficiary === "family_member" ? (ruleForm.beneficiaryUserId || undefined) : undefined,
-      }),
-    onSuccess: () => {
-      setRuleForm(emptyRuleForm());
-      queryClient.invalidateQueries({ queryKey: ["category-rules"] });
-    },
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const ruleFormPayload = () => ({
+    categoryId: ruleForm.categoryId,
+    logic: ruleForm.logic,
+    conditions: ruleForm.conditions.map(toConditionPayload),
+    linkedAccountId: ruleForm.linkedAccountId || null,
+    beneficiary: ruleForm.beneficiary,
+    beneficiaryUserId: ruleForm.beneficiary === "family_member" ? (ruleForm.beneficiaryUserId || null) : null,
   });
+  const resetRuleForm = () => {
+    setRuleForm(emptyRuleForm());
+    setEditingRuleId(null);
+  };
+  const [ruleFormError, setRuleFormError] = useState<string | null>(null);
+  const createRule = useMutation({
+    mutationFn: () => api.post("/categories/rules", ruleFormPayload()),
+    onSuccess: () => {
+      setRuleFormError(null);
+      resetRuleForm();
+      invalidateRules();
+    },
+    onError: (err) => setRuleFormError(err instanceof Error ? err.message : "Failed to save rule"),
+  });
+  const updateRule = useMutation({
+    mutationFn: (id: string) => api.patch(`/categories/rules/${id}`, ruleFormPayload()),
+    onSuccess: () => {
+      setRuleFormError(null);
+      resetRuleForm();
+      invalidateRules();
+    },
+    onError: (err) => setRuleFormError(err instanceof Error ? err.message : "Failed to save rule"),
+  });
+  const submitRuleForm = () => (editingRuleId ? updateRule.mutate(editingRuleId) : createRule.mutate());
+  const startEditRule = (r: CategoryRuleDTO) => {
+    setEditingRuleId(r.id);
+    setRuleForm(ruleFormFromDTO(r));
+  };
+
+  const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null);
   const deleteRule = useMutation({
-    mutationFn: (id: string) => api.del(`/categories/rules/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
+    mutationFn: (v: { id: string; recategorizeTaggedTo?: string }) =>
+      api.del(`/categories/rules/${v.id}`, v.recategorizeTaggedTo !== undefined ? { recategorizeTaggedTo: v.recategorizeTaggedTo } : undefined),
+    onSuccess: () => {
+      setDeletingRuleId(null);
+      invalidateRules();
+    },
   });
   const setRuleLinkedAccount = useMutation({
     mutationFn: (v: { id: string; linkedAccountId: string | null }) =>
       api.patch(`/categories/rules/${v.id}`, { linkedAccountId: v.linkedAccountId }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
+    onSuccess: invalidateRules,
   });
   const setRuleBeneficiary = useMutation({
     mutationFn: (v: { id: string; beneficiary: Beneficiary | null; beneficiaryUserId: string | null }) =>
       api.patch(`/categories/rules/${v.id}`, { beneficiary: v.beneficiary, beneficiaryUserId: v.beneficiaryUserId }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["category-rules"] }),
+    onSuccess: invalidateRules,
+  });
+
+  // Reuses the existing global "re-run all rules" endpoint (also used by the
+  // Transactions page's "Recategorize uncategorized" button) — ?all=1 also
+  // overwrites transactions that already have a category.
+  const [rerunMessage, setRerunMessage] = useState<string | null>(null);
+  const rerunAllRules = useMutation({
+    mutationFn: () => api.post<{ updated: number }>("/transactions/recategorize?all=1"),
+    onSuccess: (res) => {
+      invalidateRules();
+      setRerunMessage(`${res.updated} transaction(s) updated.`);
+      setTimeout(() => setRerunMessage(null), 5000);
+    },
+  });
+
+  // Merge: combine every selected rule's conditions into one new OR rule
+  // targeting their shared category, then delete the originals. Only enabled
+  // when every selection shares a category — there's no sensible "which
+  // category wins" answer otherwise.
+  const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
+  const toggleMergeSelect = (id: string) =>
+    setSelectedForMerge((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const selectedRules = (rules.data ?? []).filter((r) => selectedForMerge.has(r.id));
+  const mergeCategoryId = selectedRules[0]?.categoryId;
+  const canMerge = selectedRules.length >= 2 && selectedRules.every((r) => r.categoryId === mergeCategoryId);
+  // Flattening every selected rule's conditions can produce duplicates (the
+  // same payee pattern added to more than one rule over time) — collapse
+  // those before sending, both to keep the merged rule readable and to stay
+  // under the backend's condition-count cap.
+  const mergedConditionCount = new Set(
+    selectedRules.flatMap((r) => r.conditions.map((c) => `${c.type}|${c.matchAccountId}|${c.pattern}|${c.minAmount}|${c.maxAmount}`)),
+  ).size;
+  const [mergeError, setMergeError] = useState<string | null>(null);
+  const mergeRules = useMutation({
+    mutationFn: async () => {
+      const first = selectedRules[0]!;
+      const seen = new Set<string>();
+      const conditions = selectedRules
+        .flatMap((r) => r.conditions)
+        .filter((c) => {
+          const key = `${c.type}|${c.matchAccountId}|${c.pattern}|${c.minAmount}|${c.maxAmount}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((c) => ({
+          type: c.type,
+          matchAccountId: c.matchAccountId ?? undefined,
+          pattern: c.pattern ?? undefined,
+          minAmount: c.minAmount ?? undefined,
+          maxAmount: c.maxAmount ?? undefined,
+        }));
+      await api.post("/categories/rules", {
+        categoryId: mergeCategoryId,
+        logic: "any",
+        conditions,
+        linkedAccountId: first.linkedAccountId ?? undefined,
+        beneficiary: first.beneficiary ?? undefined,
+        beneficiaryUserId: first.beneficiary === "family_member" ? (first.beneficiaryUserId ?? undefined) : undefined,
+      });
+      for (const r of selectedRules) await api.del(`/categories/rules/${r.id}`);
+    },
+    onSuccess: () => {
+      setMergeError(null);
+      setSelectedForMerge(new Set());
+      invalidateRules();
+    },
+    onError: (err) => setMergeError(err instanceof Error ? err.message : "Failed to merge rules"),
   });
 
   const existingGroups = [...new Set(categories.map((c) => c.group).filter((g): g is string => !!g))].sort();
@@ -618,39 +602,115 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
 
       {/* Rules */}
       <div className="card card-pad">
-        <h3 className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-500">Auto-tag rules</h3>
+        <div className="mb-1 flex flex-wrap items-start justify-between gap-2">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Auto-tag rules</h3>
+          {user?.role === "admin" && (
+            <div className="text-right">
+              <button
+                onClick={() => rerunAllRules.mutate()}
+                disabled={rerunAllRules.isPending}
+                title="Re-applies every rule to every transaction, overwriting existing categories where a rule now matches"
+                className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+              >
+                {rerunAllRules.isPending ? "Re-running…" : "Re-run all rules"}
+              </button>
+              {rerunMessage && <p className="mt-1 text-xs text-slate-500">{rerunMessage}</p>}
+            </div>
+          )}
+        </div>
         <p className="mb-3 text-xs text-slate-500">
           E.g. "Walmart card → Groceries". New transactions are tagged automatically on sync. A rule can combine
           several conditions (all must match, or any one of them) and include an amount range.
         </p>
+
+        {selectedForMerge.size >= 2 && (
+          <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-800">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{selectedForMerge.size} rules selected</span>
+              {canMerge ? (
+                <>
+                  <span>
+                    Combines {mergedConditionCount} distinct condition{mergedConditionCount === 1 ? "" : "s"} into one OR
+                    rule — a rule that required multiple conditions together loses that AND-ing.
+                    {mergedConditionCount > 50 && " That's over the 50-condition limit — deselect some rules first."}
+                  </span>
+                  <button
+                    onClick={() => mergeRules.mutate()}
+                    disabled={mergeRules.isPending || mergedConditionCount > 50}
+                    className="ml-auto shrink-0 rounded bg-blue-600 px-2 py-1 font-medium text-white disabled:opacity-50"
+                  >
+                    {mergeRules.isPending ? "Merging…" : `Merge ${selectedForMerge.size} rules`}
+                  </button>
+                </>
+              ) : (
+                <span className="ml-auto shrink-0" title="Selected rules target different categories">
+                  Select rules in the same category to merge
+                </span>
+              )}
+              <button onClick={() => setSelectedForMerge(new Set())} className="shrink-0 underline">
+                Clear
+              </button>
+            </div>
+            {mergeError && <p className="mt-1 font-medium text-red-700">{mergeError}</p>}
+          </div>
+        )}
+
         <div className="space-y-4">
           {Object.entries(groupBy(rules.data ?? [], (r) => r.categoryName)).map(([categoryName, categoryRules]) => (
             <div key={categoryName}>
               <p className="mb-1 text-xs font-semibold text-slate-500">{categoryName}</p>
               <div className="space-y-1">
                 {categoryRules.map((r) => (
-                  <div key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-slate-50 px-2 py-1.5 text-sm">
-                    <span>{summarizeRule(r)}</span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <BeneficiarySelect
-                        value={encodeBeneficiary(r.beneficiary, r.beneficiaryUserId)}
-                        onChange={(beneficiary, beneficiaryUserId) => setRuleBeneficiary.mutate({ id: r.id, beneficiary, beneficiaryUserId })}
-                        family={family.data ?? []}
-                        className="w-32"
-                        inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                  <div key={r.id} className="flex flex-wrap items-start justify-between gap-2 rounded-lg bg-slate-50 px-2 py-1.5 text-sm">
+                    <div className="flex items-start gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={selectedForMerge.has(r.id)}
+                        onChange={() => toggleMergeSelect(r.id)}
+                        title="Select for merge"
+                        className="mt-1"
                       />
-                      <Combobox
-                        options={accountOptions(accounts.data ?? [], "No linked account")}
-                        value={r.linkedAccountId ?? ""}
-                        onChange={(v) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: v || null })}
-                        title="Auto-link a transfer counterpart account"
-                        className="w-40"
-                        inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
-                      />
-                      <button onClick={() => deleteRule.mutate(r.id)} className="text-xs text-slate-500 underline">
-                        Remove
-                      </button>
+                      <div>
+                        <RuleConditionsDisplay rule={r} />
+                        {r.taggedCount > 0 && <span className="text-xs text-slate-400">tagged {r.taggedCount}</span>}
+                      </div>
                     </div>
+                    {deletingRuleId === r.id ? (
+                      <DeleteRuleConfirm
+                        rule={r}
+                        categories={categories}
+                        busy={deleteRule.isPending}
+                        onCancel={() => setDeletingRuleId(null)}
+                        onConfirm={(recategorizeTaggedTo) => deleteRule.mutate({ id: r.id, recategorizeTaggedTo })}
+                      />
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <BeneficiarySelect
+                          value={encodeBeneficiary(r.beneficiary, r.beneficiaryUserId)}
+                          onChange={(beneficiary, beneficiaryUserId) => setRuleBeneficiary.mutate({ id: r.id, beneficiary, beneficiaryUserId })}
+                          family={family.data ?? []}
+                          className="w-32"
+                          inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                        />
+                        <Combobox
+                          options={accountOptions(accounts.data ?? [], "No linked account")}
+                          value={r.linkedAccountId ?? ""}
+                          onChange={(v) => setRuleLinkedAccount.mutate({ id: r.id, linkedAccountId: v || null })}
+                          title="Auto-link a transfer counterpart account"
+                          className="w-40"
+                          inputClassName="rounded border border-slate-200 px-1.5 py-0.5 text-xs text-slate-600"
+                        />
+                        <button onClick={() => startEditRule(r)} className="text-xs text-accent-600 hover:underline">
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => (r.taggedCount > 0 ? setDeletingRuleId(r.id) : deleteRule.mutate({ id: r.id }))}
+                          className="text-xs text-slate-500 underline"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -660,6 +720,14 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
         </div>
 
         <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+          {editingRuleId && (
+            <p className="text-xs font-medium text-accent-700">
+              Editing rule —{" "}
+              <button onClick={resetRuleForm} className="underline">
+                cancel
+              </button>
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <Combobox
               options={categoryPickOptions(categories, "Category…")}
@@ -719,14 +787,80 @@ function ManageCategories({ categories }: { categories: CategoryDTO[] }) {
               + Add condition
             </button>
             <button
-              onClick={() => createRule.mutate()}
-              disabled={!ruleForm.categoryId || !ruleForm.conditions.every(conditionValid) || createRule.isPending}
+              onClick={submitRuleForm}
+              disabled={
+                !ruleForm.categoryId ||
+                !ruleForm.conditions.every(conditionValid) ||
+                createRule.isPending ||
+                updateRule.isPending
+              }
               className="rounded-lg bg-accent-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
             >
-              Add rule
+              {editingRuleId ? "Save changes" : "Add rule"}
             </button>
           </div>
+          {ruleFormError && <p className="text-xs font-medium text-red-600">{ruleFormError}</p>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteRuleConfirm({
+  rule,
+  categories,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  rule: CategoryRuleDTO;
+  categories: CategoryDTO[];
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (recategorizeTaggedTo?: string) => void;
+}) {
+  const [choice, setChoice] = useState<"leave" | "uncategorized" | "category">("leave");
+  const [categoryId, setCategoryId] = useState("");
+
+  return (
+    <div className="w-full rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs">
+      <p className="mb-1.5 text-amber-800">
+        This rule has tagged {rule.taggedCount} transaction{rule.taggedCount === 1 ? "" : "s"}. What should happen to them?
+      </p>
+      <div className="mb-2 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1">
+          <input type="radio" checked={choice === "leave"} onChange={() => setChoice("leave")} />
+          Leave as-is
+        </label>
+        <label className="flex items-center gap-1">
+          <input type="radio" checked={choice === "uncategorized"} onChange={() => setChoice("uncategorized")} />
+          Set to Uncategorized
+        </label>
+        <label className="flex items-center gap-1">
+          <input type="radio" checked={choice === "category"} onChange={() => setChoice("category")} />
+          Recategorize to…
+        </label>
+        {choice === "category" && (
+          <Combobox
+            options={categoryPickOptions(categories, "Category…")}
+            value={categoryId}
+            onChange={setCategoryId}
+            className="w-40"
+            inputClassName="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs"
+          />
+        )}
+      </div>
+      <div className="flex justify-end gap-3">
+        <button onClick={onCancel} className="text-slate-500 underline">
+          Cancel
+        </button>
+        <button
+          onClick={() => onConfirm(choice === "leave" ? undefined : choice === "uncategorized" ? "__uncategorized__" : categoryId)}
+          disabled={busy || (choice === "category" && !categoryId)}
+          className="rounded bg-red-600 px-2 py-1 font-medium text-white disabled:opacity-50"
+        >
+          {busy ? "Deleting…" : "Delete rule"}
+        </button>
       </div>
     </div>
   );

@@ -7,6 +7,9 @@ import {
   BILL_STATUSES,
   BILL_STATUS_LABELS,
   CATEGORY_KIND_LABELS,
+  TRANSACTION_FLOW_FILTERS,
+  TRANSACTION_FLOW_FILTER_LABELS,
+  TXN_SOURCE_LABELS,
   formatMoney,
   type AccountDTO,
   type Beneficiary,
@@ -16,14 +19,23 @@ import {
   type DuplicateCandidateDTO,
   type EditManualTransactionInput,
   type FamilyMemberDTO,
-  type RuleConditionType,
+  type RuleLogic,
   type TransactionDTO,
+  type TransactionFlowFilter,
   type TransactionListResponse,
   type TransactionRowDTO,
 } from "@panditas/shared";
 import { api, ApiError } from "../api";
+import { useAuth } from "../auth";
 import { Combobox, type ComboboxItem } from "../components/ui/Combobox";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
+import {
+  ConditionEditor,
+  conditionValid,
+  emptyCondition,
+  toConditionPayload,
+  type RuleFormState,
+} from "../components/rules/RuleForm";
 
 const PAGE_SIZE = 30;
 
@@ -194,6 +206,7 @@ export function TransactionsPage() {
         }
       : null,
   );
+  const [flowFilter, setFlowFilter] = useState<TransactionFlowFilter | "">("");
   const [beneficiaryFilter, setBeneficiaryFilter] = useState(""); // "", "__untagged__", or a Beneficiary
   const [search, setSearch] = useState("");
   const [datePreset, setDatePreset] = useState<DatePreset>(() =>
@@ -231,6 +244,7 @@ export function TransactionsPage() {
   });
 
   const params = new URLSearchParams();
+  if (flowFilter) params.set("flow", flowFilter);
   if (accountId) params.set("accountId", accountId);
   else if (institutionId) params.set("institutionId", institutionId);
   if (categoryGroup) params.set("categoryIds", categoryGroup.ids.join(","));
@@ -285,6 +299,17 @@ export function TransactionsPage() {
   // "Merge" a manually-logged card payment into its later-synced counterpart —
   // deletes the manual placeholder, keeps the synced (richer) transaction.
   const mergeDuplicate = useMutation({
+    mutationFn: (id: string) => api.del(`/transactions/${id}`),
+    onSuccess: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+
+  // Delete from the detail drill-down — works for any source (soft delete;
+  // admin-only for non-manual, enforced server-side too).
+  const deleteTxn = useMutation({
     mutationFn: (id: string) => api.del(`/transactions/${id}`),
     onSuccess: () => {
       invalidate();
@@ -486,6 +511,21 @@ export function TransactionsPage() {
       <div className="card space-y-3 p-3">
         <div className="flex flex-wrap gap-2">
           <Combobox
+            options={[
+              { value: "", label: "Income / expense / uncategorized" },
+              ...TRANSACTION_FLOW_FILTERS.map((f) => ({
+                value: f,
+                label: TRANSACTION_FLOW_FILTER_LABELS[f],
+              })),
+            ]}
+            value={flowFilter}
+            onChange={(v) => {
+              setFlowFilter(v as TransactionFlowFilter | "");
+              setPage(0);
+            }}
+            className="max-w-[12rem]"
+          />
+          <Combobox
             options={institutionOptions(
               accounts.data ?? [],
               "All institutions",
@@ -674,6 +714,8 @@ export function TransactionsPage() {
             onClone={() => handleClone(t)}
             onEdit={(body) => editTxn.mutate({ id: t.id, body })}
             editBusy={editTxn.isPending}
+            onDelete={() => deleteTxn.mutate(t.id)}
+            deleteBusy={deleteTxn.isPending}
           />
         ))}
       </div>
@@ -733,6 +775,8 @@ function TxnRow({
   onClone,
   onEdit,
   editBusy,
+  onDelete,
+  deleteBusy,
 }: {
   txn: TransactionRowDTO;
   categories: CategoryDTO[];
@@ -748,13 +792,18 @@ function TxnRow({
   onClone: () => void;
   onEdit: (body: EditManualTransactionInput) => void;
   editBusy: boolean;
+  onDelete: () => void;
+  deleteBusy: boolean;
 }) {
+  const { user } = useAuth();
   const [note, setNote] = useState(txn.beneficiaryNote ?? "");
   const [showRuleForm, setShowRuleForm] = useState(false);
   const [showEditForm, setShowEditForm] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [suggestionDismissed, setSuggestionDismissed] = useState(false);
   const [duplicateDismissed, setDuplicateDismissed] = useState(false);
   const canEdit = txn.source === "manual" && !txn.transferAccountId;
+  const canDelete = txn.source === "manual" || user?.role === "admin";
   const category = categories.find((c) => c.id === txn.categoryId);
   const isTransferKind = category?.kind === "transfer";
   const showSuggestion =
@@ -772,6 +821,13 @@ function TxnRow({
           <p className="text-xs text-slate-500">
             {new Date(txn.postedAt).toLocaleDateString("en-CA")} ·{" "}
             {txn.accountName}
+            <button
+              onClick={() => setShowDetails((s) => !s)}
+              title="Show source and raw data"
+              className={`ml-1 rounded px-1 text-[10px] font-medium uppercase tracking-wide hover:bg-slate-200 ${showDetails ? "bg-slate-200 text-slate-700" : "bg-slate-100 text-slate-500"}`}
+            >
+              {TXN_SOURCE_LABELS[txn.source]}
+            </button>
             {txn.pending && (
               <span className="ml-1 text-amber-600">· pending</span>
             )}
@@ -844,6 +900,18 @@ function TxnRow({
             </button>
           </div>
         </div>
+      )}
+
+      {showDetails && (
+        <TransactionDetailPanel
+          txn={txn}
+          canDelete={canDelete}
+          deleteBusy={deleteBusy}
+          onDelete={() => {
+            onDelete();
+            setShowDetails(false);
+          }}
+        />
       )}
 
       {showEditForm && (
@@ -968,6 +1036,76 @@ function TxnRow({
             <RuleIcon />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Inline drill-down: source + the raw data that produced this row (already
+// present on the fetched row, so no extra round trip) + a delete option.
+// Follows the same "click a row, expand a panel below it" pattern as
+// PendingImportDetailPanel in FolderSyncPage.tsx.
+function TransactionDetailPanel({
+  txn,
+  canDelete,
+  deleteBusy,
+  onDelete,
+}: {
+  txn: TransactionRowDTO;
+  canDelete: boolean;
+  deleteBusy: boolean;
+  onDelete: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs">
+      <p className="mb-1 font-medium text-slate-600">
+        Source: {TXN_SOURCE_LABELS[txn.source]}
+      </p>
+      {txn.rawPayload ? (
+        <pre className="max-h-48 overflow-auto rounded bg-white p-2 text-[11px] text-slate-600">
+          {JSON.stringify(txn.rawPayload, null, 2)}
+        </pre>
+      ) : (
+        <p className="text-slate-400">
+          No raw data — entered directly.
+        </p>
+      )}
+
+      <div className="mt-2 flex items-center gap-2">
+        {canDelete ? (
+          confirming ? (
+            <>
+              <span className="text-slate-500">Delete this transaction?</span>
+              <button
+                onClick={onDelete}
+                disabled={deleteBusy}
+                className="rounded bg-red-600 px-2 py-1 font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteBusy ? "Deleting…" : "Confirm"}
+              </button>
+              <button
+                onClick={() => setConfirming(false)}
+                className="text-slate-500 underline"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setConfirming(true)}
+              title="Removes this transaction permanently and won't reappear on the next sync/import"
+              className="text-red-600 underline"
+            >
+              Delete
+            </button>
+          )
+        ) : (
+          <span className="text-slate-400" title="Only an admin can delete a synced or imported transaction">
+            Delete requires admin
+          </span>
+        )}
       </div>
     </div>
   );
@@ -1168,36 +1306,35 @@ function CreateRuleForm({
     txnPatch: Record<string, unknown>,
   ) => void;
 }) {
-  const [matchType, setMatchType] = useState<
-    Exclude<RuleConditionType, "amount_range">
-  >(txn.payee ? "payee_contains" : "account");
-  const [pattern, setPattern] = useState(txn.payee ?? "");
-  const [categoryId, setCategoryId] = useState(txn.categoryId ?? "");
-  const [linkedAccountId, setLinkedAccountId] = useState(
-    txn.transferAccountId ?? "",
-  );
+  const [ruleForm, setRuleForm] = useState<RuleFormState>(() => ({
+    categoryId: txn.categoryId ?? "",
+    logic: "all",
+    conditions: [
+      txn.payee
+        ? { ...emptyCondition(), type: "payee_contains", pattern: txn.payee }
+        : { ...emptyCondition(), type: "account", matchAccountId: txn.accountId },
+    ],
+    linkedAccountId: txn.transferAccountId ?? "",
+    beneficiary: null,
+    beneficiaryUserId: "",
+  }));
 
-  const canCreate =
-    !!categoryId && (matchType === "account" || pattern.trim().length > 0);
+  const canCreate = !!ruleForm.categoryId && ruleForm.conditions.every(conditionValid);
 
   const submit = () => {
     if (!canCreate) return;
     const rule: CreateCategoryRuleInput = {
-      categoryId,
-      logic: "all",
-      conditions: [
-        {
-          type: matchType,
-          matchAccountId: matchType === "account" ? txn.accountId : undefined,
-          pattern: matchType !== "account" ? pattern.trim() : undefined,
-        },
-      ],
-      linkedAccountId: linkedAccountId || undefined,
+      categoryId: ruleForm.categoryId,
+      logic: ruleForm.logic,
+      conditions: ruleForm.conditions.map(toConditionPayload),
+      linkedAccountId: ruleForm.linkedAccountId || undefined,
+      beneficiary: ruleForm.beneficiary || undefined,
+      beneficiaryUserId: ruleForm.beneficiary === "family_member" ? (ruleForm.beneficiaryUserId || undefined) : undefined,
       priority: 10,
     };
     const txnPatch: Record<string, unknown> = {
-      categoryId,
-      transferAccountId: linkedAccountId || null,
+      categoryId: ruleForm.categoryId,
+      transferAccountId: ruleForm.linkedAccountId || null,
     };
     onCreate(rule, txnPatch);
   };
@@ -1209,54 +1346,65 @@ function CreateRuleForm({
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Combobox
-          options={[
-            { value: "account", label: `This account (${txn.accountName})` },
-            { value: "payee_contains", label: "Payee contains…" },
-            { value: "description_regex", label: "Description matches…" },
-          ]}
-          value={matchType}
-          onChange={(v) => setMatchType(v as Exclude<RuleConditionType, "amount_range">)}
-          className="w-48"
-          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+          options={categoryPickOptions(categories, "Category…")}
+          value={ruleForm.categoryId}
+          onChange={(v) => setRuleForm({ ...ruleForm, categoryId: v })}
+          className="w-40"
         />
-        {matchType !== "account" && (
-          <input
-            value={pattern}
-            onChange={(e) => setPattern(e.target.value)}
-            placeholder="Text to match"
-            className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-          />
+        {ruleForm.conditions.length > 1 && (
+          <select
+            value={ruleForm.logic}
+            onChange={(e) => setRuleForm({ ...ruleForm, logic: e.target.value as RuleLogic })}
+            className="input w-48"
+            title="How the conditions below combine"
+          >
+            <option value="all">All conditions match</option>
+            <option value="any">Any condition matches</option>
+          </select>
         )}
         <Combobox
-          options={categoryPickOptions(categories, "Category…")}
-          value={categoryId}
-          onChange={setCategoryId}
-          className="w-40"
-          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
-        />
-        <Combobox
-          options={accountOptions(
-            accounts,
-            "Links to account… (optional)",
-            txn.accountId,
-          )}
-          value={linkedAccountId}
-          onChange={setLinkedAccountId}
+          options={accountOptions(accounts, "Links to account… (optional)", txn.accountId)}
+          value={ruleForm.linkedAccountId}
+          onChange={(v) => setRuleForm({ ...ruleForm, linkedAccountId: v })}
           className="w-48"
-          inputClassName="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
         />
       </div>
-      <div className="flex justify-end gap-3">
-        <button onClick={onCancel} className="text-xs text-slate-500 underline">
-          Cancel
-        </button>
+
+      {ruleForm.conditions.map((condition, i) => (
+        <ConditionEditor
+          key={i}
+          condition={condition}
+          accounts={accounts}
+          onChange={(next) =>
+            setRuleForm({ ...ruleForm, conditions: ruleForm.conditions.map((c, ci) => (ci === i ? next : c)) })
+          }
+          onRemove={
+            ruleForm.conditions.length > 1
+              ? () => setRuleForm({ ...ruleForm, conditions: ruleForm.conditions.filter((_, ci) => ci !== i) })
+              : undefined
+          }
+        />
+      ))}
+
+      <div className="flex items-center justify-between gap-3">
         <button
-          onClick={submit}
-          disabled={!canCreate}
-          className="rounded-lg bg-accent-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+          onClick={() => setRuleForm({ ...ruleForm, conditions: [...ruleForm.conditions, emptyCondition()] })}
+          className="text-xs text-accent-600 hover:underline"
         >
-          Create rule
+          + Add condition
         </button>
+        <div className="flex gap-3">
+          <button onClick={onCancel} className="text-xs text-slate-500 underline">
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canCreate}
+            className="rounded-lg bg-accent-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+          >
+            Create rule
+          </button>
+        </div>
       </div>
     </div>
   );

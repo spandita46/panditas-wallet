@@ -29,6 +29,7 @@ interface TxnLike {
 }
 
 interface MatchResult {
+  ruleId: string;
   categoryId: string;
   linkedAccountId: string | null;
   beneficiary: Beneficiary | null;
@@ -99,6 +100,7 @@ export function matchCategory(txn: TxnLike, rules: Rule[]): MatchResult | null {
         : rule.conditions.every((c) => conditionMatches(c, txn));
     if (matched) {
       return {
+        ruleId: rule.id,
         categoryId: rule.categoryId,
         linkedAccountId: rule.linkedAccountId,
         beneficiary: rule.beneficiary,
@@ -154,6 +156,7 @@ async function applyRules(txns: CategorizableTxn[]): Promise<number> {
       where: { id: txn.id },
       data: {
         categoryId: match.categoryId,
+        taggedByRuleId: match.ruleId,
         ...(match.linkedAccountId && { transferAccountId: match.linkedAccountId }),
         ...(fillBeneficiary && {
           beneficiary: source!.beneficiary,
