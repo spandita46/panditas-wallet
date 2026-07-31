@@ -1,6 +1,8 @@
 import type { AccountType } from "@panditas/shared";
 import { prisma } from "./db.js";
 import { categorizeNewTransactions } from "./categorize.js";
+import { PENDING_MARKER, PENDING_MATCH_WINDOW_MS } from "./duplicateHeuristics.js";
+import { detectAnomalies } from "./anomalyDetection.js";
 import { decrypt } from "./crypto.js";
 import {
   classifySimplefinError,
@@ -126,13 +128,75 @@ async function upsertAccount(institutionId: string, institutionName: string, a: 
   }
 
   // Insert new transactions; refresh any that were pending and may now be posted.
+  // deletedAt: undefined opts out of the soft-delete filter (see db.ts) — a
+  // soft-deleted transaction's externalId must still count as "already
+  // handled" so it isn't recreated.
   const existing = await prisma.transaction.findMany({
-    where: { accountId: account.id, externalId: { in: a.transactions.map((t) => t.id) } },
+    where: { accountId: account.id, externalId: { in: a.transactions.map((t) => t.id) }, deletedAt: undefined },
     select: { externalId: true, pending: true },
   });
   const existingById = new Map(existing.map((t) => [t.externalId, t]));
 
-  const toCreate = a.transactions.filter((t) => !existingById.has(t.id));
+  const unmatched = a.transactions.filter((t) => !existingById.has(t.id));
+
+  // Some institutions (observed: TD, via SimpleFIN) reissue a brand-new
+  // externalId once a pending hold posts, instead of keeping the same one —
+  // the pending->posted refresh above can't catch that, since it matches on
+  // externalId. Left alone this creates a second, permanent row for the same
+  // real purchase (found: $1,300+ silently double-counted on one card).
+  // Reconcile it here by re-pointing the old placeholder row at the new
+  // externalId instead of inserting a duplicate, but only when the old row's
+  // description still literally says "pending" — a genuine coincidental
+  // same-amount/same-day purchase never carries that marker, so this can't
+  // eat a real second transaction (confirmed against this household's data:
+  // recurring same-amount charges like insurance installments or transit
+  // top-ups are always two fully-posted rows from the start). Deliberately
+  // left implicitly filtered to non-deleted rows (no deletedAt: undefined
+  // here) — an admin who soft-deleted a bad row shouldn't have it resurrected
+  // by getting re-pointed at a new externalId.
+  const pendingShadows =
+    unmatched.length === 0
+      ? []
+      : (
+          await prisma.transaction.findMany({
+            where: {
+              accountId: account.id,
+              source: "simplefin",
+              description: { contains: "pending", mode: "insensitive" },
+              postedAt: {
+                gte: new Date(Math.min(...unmatched.map((t) => t.posted.getTime())) - PENDING_MATCH_WINDOW_MS),
+                lte: new Date(Math.max(...unmatched.map((t) => t.posted.getTime())) + PENDING_MATCH_WINDOW_MS),
+              },
+            },
+            select: { id: true, amount: true, postedAt: true, description: true },
+          })
+        ).filter((row) => PENDING_MARKER.test(row.description ?? ""));
+  const claimedShadowIds = new Set<string>();
+
+  const toCreate: typeof unmatched = [];
+  for (const t of unmatched) {
+    const shadow = pendingShadows
+      .filter((s) => !claimedShadowIds.has(s.id) && Number(s.amount) === Number(t.amount))
+      .sort((a, b) => Math.abs(a.postedAt.getTime() - t.posted.getTime()) - Math.abs(b.postedAt.getTime() - t.posted.getTime()))[0];
+    if (shadow && Math.abs(shadow.postedAt.getTime() - t.posted.getTime()) <= PENDING_MATCH_WINDOW_MS) {
+      claimedShadowIds.add(shadow.id);
+      await prisma.transaction.update({
+        where: { id: shadow.id },
+        data: {
+          externalId: t.id,
+          postedAt: t.posted,
+          amount: t.amount,
+          payee: t.payee,
+          description: t.description,
+          memo: t.memo,
+          pending: t.pending,
+          rawPayload: t.raw as object,
+        },
+      });
+    } else {
+      toCreate.push(t);
+    }
+  }
   let newTxnIds: string[] = [];
   if (toCreate.length > 0) {
     await prisma.transaction.createMany({
@@ -145,6 +209,7 @@ async function upsertAccount(institutionId: string, institutionName: string, a: 
         description: t.description,
         memo: t.memo,
         pending: t.pending,
+        rawPayload: t.raw as object,
         source: "simplefin" as const,
       })),
       skipDuplicates: true,
@@ -545,6 +610,10 @@ export async function syncAll(): Promise<SyncSummary> {
     // the state this sync just produced. One-time events (new account/
     // institution) already fired inline above, at the moment of creation.
     await syncLiveConditionNotifications();
+
+    // Flag possible duplicate transactions for admin review. Best-effort —
+    // a detector bug should never take down the sync it's piggybacking on.
+    await detectAnomalies().catch((err) => console.error("[anomalyDetection] post-sync run failed:", err));
   } finally {
     syncing = false;
   }

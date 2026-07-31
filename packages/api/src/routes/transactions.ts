@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
   BENEFICIARIES,
+  TRANSACTION_FLOW_FILTERS,
   createManualTransactionSchema,
   createTransferSchema,
   editManualTransactionSchema,
@@ -12,8 +13,6 @@ import {
   tagTransactionSchema,
   type DuplicateCandidateDTO,
   type DuplicatePaymentSuggestionDTO,
-  type ImportCommitResponse,
-  type ImportPreviewResponse,
   type TransactionListResponse,
   type TransferSuggestionDTO,
 } from "@panditas/shared";
@@ -21,6 +20,7 @@ import { prisma } from "../db.js";
 import { requireRole } from "../auth.js";
 import { recategorizeAll } from "../categorize.js";
 import { toTransactionDTO } from "../mappers.js";
+import { commitImportRows, previewImportRows } from "../importCore.js";
 
 const listQuerySchema = z.object({
   accountId: z.string().optional(),
@@ -33,6 +33,9 @@ const listQuerySchema = z.object({
   // deep links. Takes precedence over categoryId/untaggedCategory when set.
   categoryIds: z.string().optional(),
   untaggedCategory: z.coerce.boolean().optional(),
+  // Quick income/expense/uncategorized triage — independent of, and
+  // AND-combined with, categoryId/untaggedCategory above.
+  flow: z.enum(TRANSACTION_FLOW_FILTERS).optional(),
   beneficiary: z.enum(BENEFICIARIES).optional(),
   untaggedBeneficiary: z.coerce.boolean().optional(),
   month: z
@@ -284,6 +287,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       categoryId,
       categoryIds,
       untaggedCategory,
+      flow,
       beneficiary,
       untaggedBeneficiary,
       month,
@@ -343,7 +347,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
         ? { categoryId: { in: categoryIdList } }
         : categoryId
           ? { categoryId }
-          : untaggedCategory
+          : untaggedCategory || flow === "uncategorized"
             ? { categoryId: null }
             : {}),
       ...(beneficiary && { beneficiary }),
@@ -360,6 +364,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
               },
             ]
           : []),
+        ...(flow === "income" ? [{ amount: { gte: 0 } }] : flow === "expense" ? [{ amount: { lt: 0 } }] : []),
         ...(minAmount !== undefined || maxAmount !== undefined ? [amountFilter(minAmount, maxAmount)] : []),
       ],
     };
@@ -519,25 +524,34 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     return reply.code(201).send(toTransactionDTO(toTxn));
   });
 
-  // Undo a manual entry (e.g. after "Merge" resolves it was a duplicate of a
-  // synced transaction). Restricted to source: "manual" — a synced
-  // transaction just reappears on the next sync anyway, so deleting it here
-  // would only cause confusion, not actually remove it from the feed.
+  // Soft-delete any transaction, regardless of source. Manual entries stay
+  // open to admin+adult (unchanged everyday cleanup); correcting a
+  // synced/imported row is a data-normalization action and admin-only. The
+  // row itself is the "don't recreate this" tombstone (see db.ts) — sync's
+  // externalId dedupe and import's duplicate-preview check both still see
+  // it. A synced/imported account's currentBalance comes directly from the
+  // institution's own balance figure every sync, never summed from
+  // transactions, so only a manual-source delete adjusts it.
   app.delete("/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const user = request.user!;
     const txn = await prisma.transaction.findUnique({ where: { id } });
     if (!txn) return reply.code(404).send({ error: "Transaction not found" });
-    if (txn.source !== "manual") {
-      return reply.code(400).send({ error: "Only manually-entered transactions can be deleted here" });
+    if (txn.source !== "manual" && user.role !== "admin") {
+      return reply.code(403).send({ error: "Only an admin can delete a synced or imported transaction" });
     }
 
-    const [, updatedAccount] = await prisma.$transaction([
-      prisma.transaction.delete({ where: { id } }),
-      prisma.account.update({ where: { id: txn.accountId }, data: { currentBalance: { decrement: txn.amount } } }),
-    ]);
-    await prisma.balanceSnapshot.create({
-      data: { accountId: txn.accountId, balance: updatedAccount.currentBalance },
-    });
+    if (txn.source === "manual") {
+      const [, updatedAccount] = await prisma.$transaction([
+        prisma.transaction.update({ where: { id }, data: { deletedAt: new Date(), deletedByUserId: user.id } }),
+        prisma.account.update({ where: { id: txn.accountId }, data: { currentBalance: { decrement: txn.amount } } }),
+      ]);
+      await prisma.balanceSnapshot.create({
+        data: { accountId: txn.accountId, balance: updatedAccount.currentBalance },
+      });
+    } else {
+      await prisma.transaction.update({ where: { id }, data: { deletedAt: new Date(), deletedByUserId: user.id } });
+    }
 
     return reply.code(204).send();
   });
@@ -593,10 +607,9 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
   // Bulk import (a bank export beyond SimpleFIN's 90-day window). File
   // parsing and column mapping happen client-side — this only ever sees
-  // already-normalized rows. Flags likely duplicates (same account, date,
-  // amount) for the user to review before committing; not exact dedup, since
-  // imported rows have no externalId to match on. Admin-only, same as other
-  // structural account/transaction bulk operations.
+  // already-normalized rows. Admin-only, same as other structural
+  // account/transaction bulk operations. Preview/commit logic itself lives in
+  // importCore.ts, shared with folder sync's agent-assisted import.
   app.post("/import/preview", { preHandler: requireRole("admin") }, async (request, reply) => {
     const parsed = importPreviewSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
@@ -605,36 +618,9 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const account = await prisma.account.findUnique({ where: { id: accountId } });
     if (!account) return reply.code(404).send({ error: "Account not found" });
 
-    const dates = rows.map((r) => new Date(`${r.postedAt}T00:00:00.000Z`));
-    const existing = await prisma.transaction.findMany({
-      where: {
-        accountId,
-        postedAt: { gte: new Date(Math.min(...dates.map((d) => d.getTime()))), lte: new Date(Math.max(...dates.map((d) => d.getTime()))) },
-      },
-      select: { postedAt: true, amount: true },
-    });
-    const existingKeys = new Set(existing.map((t) => `${t.postedAt.toISOString().slice(0, 10)}|${Number(t.amount)}`));
-
-    const result: ImportPreviewResponse = {
-      rows: rows.map((r, index) => ({
-        index,
-        postedAt: r.postedAt,
-        amount: r.amount,
-        payee: r.payee ?? null,
-        memo: r.memo ?? null,
-        duplicate: existingKeys.has(`${r.postedAt}|${r.amount}`),
-      })),
-      duplicateCount: 0,
-    };
-    result.duplicateCount = result.rows.filter((r) => r.duplicate).length;
-    return result;
+    return previewImportRows(accountId, rows);
   });
 
-  // Commits rows the user confirmed in the preview step (already excludes
-  // whatever they chose to skip). Historical backfill only — deliberately
-  // does NOT touch currentBalance/BalanceSnapshot, since the account's
-  // current balance is already correct from sync (or from manual edits) and
-  // isn't affected by filling in older history.
   app.post("/import/commit", { preHandler: requireRole("admin") }, async (request, reply) => {
     const parsed = importCommitSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
@@ -643,19 +629,7 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     const account = await prisma.account.findUnique({ where: { id: accountId } });
     if (!account) return reply.code(404).send({ error: "Account not found" });
 
-    await prisma.transaction.createMany({
-      data: rows.map((r) => ({
-        accountId,
-        postedAt: new Date(`${r.postedAt}T00:00:00.000Z`),
-        amount: r.amount,
-        payee: r.payee ?? null,
-        memo: r.memo ?? null,
-        source: "manual" as const,
-      })),
-    });
-    const recategorized = await recategorizeAll(true);
-
-    const response: ImportCommitResponse = { imported: rows.length, recategorized };
+    const response = await commitImportRows(accountId, rows, "import_single");
     return reply.code(201).send(response);
   });
 
@@ -710,7 +684,12 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
 
     const txn = await prisma.transaction.update({
       where: { id },
-      data,
+      data: {
+        ...data,
+        // A manual category change breaks rule attribution — the transaction
+        // is no longer "tagged by" whatever rule last set it.
+        ...(data.categoryId !== undefined && { taggedByRuleId: null }),
+      },
       include: withRelations,
     });
     return toTransactionDTO(txn);

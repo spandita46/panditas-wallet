@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import {
   createCategorySchema,
   createCategoryRuleSchema,
+  deleteCategoryRuleSchema,
   updateCategorySchema,
   updateCategoryRuleSchema,
   type Beneficiary,
@@ -45,7 +46,7 @@ type RuleWithRelations = CategoryRule & {
   beneficiaryUser: { name: string } | null;
 };
 
-function toRuleDTO(r: RuleWithRelations): CategoryRuleDTO {
+function toRuleDTO(r: RuleWithRelations, taggedCount: number): CategoryRuleDTO {
   return {
     id: r.id,
     categoryId: r.categoryId,
@@ -66,7 +67,18 @@ function toRuleDTO(r: RuleWithRelations): CategoryRuleDTO {
     beneficiary: r.beneficiary as Beneficiary | null,
     beneficiaryUserId: r.beneficiaryUserId,
     beneficiaryName: r.beneficiaryUser?.name ?? null,
+    taggedCount,
   };
+}
+
+async function loadTaggedCounts(ruleIds: string[]): Promise<Map<string, number>> {
+  if (ruleIds.length === 0) return new Map();
+  const counts = await prisma.transaction.groupBy({
+    by: ["taggedByRuleId"],
+    where: { taggedByRuleId: { in: ruleIds } },
+    _count: true,
+  });
+  return new Map(counts.map((c) => [c.taggedByRuleId as string, c._count]));
 }
 
 export async function categoryRoutes(app: FastifyInstance): Promise<void> {
@@ -115,7 +127,8 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
       orderBy: [{ priority: "desc" }, { id: "asc" }],
       include: ruleInclude,
     });
-    return rules.map(toRuleDTO);
+    const taggedCounts = await loadTaggedCounts(rules.map((r) => r.id));
+    return rules.map((r) => toRuleDTO(r, taggedCounts.get(r.id) ?? 0));
   });
 
   app.post("/rules", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
@@ -141,7 +154,7 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
       },
       include: ruleInclude,
     });
-    return reply.code(201).send(toRuleDTO(rule));
+    return reply.code(201).send(toRuleDTO(rule, 0));
   });
 
   app.patch("/rules/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
@@ -177,11 +190,29 @@ export async function categoryRoutes(app: FastifyInstance): Promise<void> {
       },
       include: ruleInclude,
     });
-    return toRuleDTO(rule);
+    const taggedCounts = await loadTaggedCounts([id]);
+    return toRuleDTO(rule, taggedCounts.get(id) ?? 0);
   });
 
+  // Deleting a rule never touches the transactions it already tagged unless
+  // told to — recategorizeTaggedTo lets the caller resolve them in the same
+  // request: "__uncategorized__" clears categoryId, any other value moves
+  // them to that category, omitted leaves them exactly as-is (the FK's
+  // onDelete: SetNull just clears the now-dangling taggedByRuleId).
   app.delete("/rules/:id", { preHandler: requireRole("admin", "adult") }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const parsed = deleteCategoryRuleSchema.safeParse(request.body ?? {});
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid input" });
+
+    if (parsed.data.recategorizeTaggedTo !== undefined) {
+      await prisma.transaction.updateMany({
+        where: { taggedByRuleId: id },
+        data: {
+          categoryId: parsed.data.recategorizeTaggedTo === "__uncategorized__" ? null : parsed.data.recategorizeTaggedTo,
+          taggedByRuleId: null,
+        },
+      });
+    }
     await prisma.categoryRule.delete({ where: { id } }).catch(() => null);
     return reply.code(204).send();
   });

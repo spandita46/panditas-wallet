@@ -10,6 +10,10 @@ export interface NormalizedTxn {
   description: string | null;
   memo: string | null;
   pending: boolean;
+  // The untransformed transaction object from SimpleFIN's API response —
+  // kept for the transaction-detail drill-down ("what raw data produced
+  // this?"). Not backfilled for rows synced before this existed.
+  raw: unknown;
 }
 
 export interface NormalizedAccount {
@@ -170,6 +174,7 @@ export async function fetchAccounts(
         description: t.description ?? null,
         memo: t.memo ?? null,
         pending: Boolean(t.pending),
+        raw: t,
       })),
     };
   });

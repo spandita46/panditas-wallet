@@ -4,15 +4,20 @@ import Papa from "papaparse";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   formatMoney,
+  parseAmountValue,
+  parseDateValue,
   type AccountDTO,
+  type ImportAmountMode,
   type ImportCommitResponse,
+  type ImportDateFormat,
   type ImportPreviewResponse,
 } from "@panditas/shared";
 import { api, ApiError } from "../api";
 import { Combobox } from "../components/ui/Combobox";
+import { ImportRowTable } from "../components/ui/ImportRowTable";
 
-type DateFormat = "YYYY-MM-DD" | "MM/DD/YYYY" | "DD/MM/YYYY";
-type AmountMode = "single" | "debit_credit";
+type DateFormat = ImportDateFormat;
+type AmountMode = ImportAmountMode;
 type Step = "upload" | "map" | "preview" | "done";
 
 interface NormalizedRow {
@@ -20,39 +25,6 @@ interface NormalizedRow {
   amount: number;
   payee: string | null;
   memo: string | null;
-}
-
-function parseDateValue(raw: string, format: DateFormat): string | null {
-  const s = raw.trim();
-  if (!s) return null;
-  const parts = format === "YYYY-MM-DD" ? s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/) : s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-  if (!parts) return null;
-  const a = Number(parts[1]!);
-  const b = Number(parts[2]!);
-  const c = Number(parts[3]!);
-  let y: number, m: number, d: number;
-  if (format === "YYYY-MM-DD") {
-    y = a;
-    m = b;
-    d = c;
-  } else if (format === "MM/DD/YYYY") {
-    m = a;
-    d = b;
-    y = c;
-  } else {
-    d = a;
-    m = b;
-    y = c;
-  }
-  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
-  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-}
-
-function parseAmountValue(raw: string): number | null {
-  const cleaned = raw.trim().replace(/[$,\s]/g, "").replace(/^\((.*)\)$/, "-$1");
-  if (cleaned === "" || cleaned === "-") return null;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
 }
 
 export function ImportPage() {
@@ -206,11 +178,16 @@ export function ImportPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Import transactions</h1>
-        <p className="text-sm text-slate-600">
-          Bring in history beyond SimpleFIN's 90-day window from a bank's own CSV export — one account per import.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">Import transactions</h1>
+          <p className="text-sm text-slate-600">
+            Bring in history beyond SimpleFIN's 90-day window from a bank's own CSV export — one account per import.
+          </p>
+        </div>
+        <Link to="/import/folder-sync" className="mt-1 shrink-0 text-sm font-medium text-accent-600 hover:underline">
+          Prefer automatic parsing? Try Folder sync →
+        </Link>
       </div>
 
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
@@ -343,32 +320,7 @@ export function ImportPage() {
             {preview.rows.length} row(s) parsed, {preview.duplicateCount} flagged as possible duplicates (unchecked by default), {skippedCount} skipped (couldn't parse).
             {" "}{selected.size} selected to import.
           </p>
-          <div className="max-h-96 overflow-y-auto rounded-lg border border-slate-200">
-            <table className="w-full text-left text-sm">
-              <thead className="sticky top-0 bg-slate-50 text-xs uppercase text-slate-500">
-                <tr>
-                  <th className="p-2"></th>
-                  <th className="p-2">Date</th>
-                  <th className="p-2">Amount</th>
-                  <th className="p-2">Payee</th>
-                  <th className="p-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {preview.rows.map((r) => (
-                  <tr key={r.index} className={`border-t border-slate-100 ${r.duplicate ? "bg-amber-50" : ""}`}>
-                    <td className="p-2">
-                      <input type="checkbox" checked={selected.has(r.index)} onChange={() => toggleRow(r.index)} />
-                    </td>
-                    <td className="p-2">{r.postedAt}</td>
-                    <td className="p-2">{formatMoney(r.amount, selectedAccount?.currency ?? "CAD")}</td>
-                    <td className="p-2 truncate">{r.payee ?? "—"}</td>
-                    <td className="p-2 text-xs text-amber-700">{r.duplicate ? "possible duplicate" : ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ImportRowTable rows={preview.rows} selected={selected} onToggle={toggleRow} currency={selectedAccount?.currency ?? "CAD"} />
           <div className="flex gap-3">
             <button onClick={() => setStep("map")} className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-600 hover:bg-slate-100">
               Back

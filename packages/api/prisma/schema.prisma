@@ -40,6 +40,9 @@ model User {
   benefitingTxns   Transaction[] @relation("TxnBeneficiary")
   defaultForCategories Category[]     @relation("CategoryDefaultBeneficiary")
   beneficiaryOfRules   CategoryRule[] @relation("RuleBeneficiary")
+  reviewedPendingImports PendingImport[]
+  deletedTransactions    Transaction[] @relation("TxnDeletedBy")
+  reviewedAnomalies      TransactionAnomaly[] @relation("AnomalyReviewedBy")
 }
 
 model Session {
@@ -207,6 +210,8 @@ model Account {
   ruleConditions CategoryRuleCondition[]
   linkedByRules  CategoryRule[]    @relation("RuleLinkedAccount")
   transferTxns   Transaction[]     @relation("TxnTransferAccount")
+  pendingImports PendingImport[] @relation("PendingImportAccount")
+  folderSyncMappingSuggestions FolderSyncMapping[] @relation("FolderSyncSuggestedAccount")
 
   @@unique([institutionId, externalId])
   @@index([type])
@@ -233,6 +238,10 @@ model AccountUser {
 enum TxnSource {
   simplefin
   manual
+  // Manual CSV-import wizard (single file, interactive preview/commit).
+  import_single
+  // Agent-assisted folder sync (dropped file, agent-parsed, staged for review).
+  import_folder_sync
 }
 
 enum BillStatus {
@@ -263,6 +272,12 @@ model Transaction {
   externalId  String?
   categoryId  String?
   category    Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  // Which rule (if any) most recently set categoryId — cleared on a manual
+  // category change (see PATCH /transactions/:id), never on rule edits.
+  // Lets a rule's delete flow offer "recategorize the transactions I tagged"
+  // as an exact query instead of an approximation.
+  taggedByRuleId String?
+  taggedByRule   CategoryRule? @relation("TxnTaggedByRule", fields: [taggedByRuleId], references: [id], onDelete: SetNull)
   // Who the spend was for (see Beneficiary enum).
   beneficiary       Beneficiary?
   beneficiaryUserId String?
@@ -278,6 +293,17 @@ model Transaction {
   // infer this from data).
   billStatus  BillStatus?
   visibility  Visibility @default(shared)
+  // Raw source data that produced this row — SimpleFIN's per-transaction API
+  // payload for synced rows, the mapped import row for imported rows, null
+  // for hand-typed manual rows (the transaction's own fields already are the
+  // raw data). Forward-looking only; not backfilled for existing rows.
+  rawPayload  Json?
+  // Soft delete: the row itself is the "don't recreate this" tombstone —
+  // sync's externalId dedupe and import's duplicate-preview check both query
+  // Transaction directly, so a deleted row naturally can't be reintroduced.
+  deletedAt        DateTime?
+  deletedByUserId  String?
+  deletedByUser    User?      @relation("TxnDeletedBy", fields: [deletedByUserId], references: [id], onDelete: SetNull)
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
@@ -285,7 +311,30 @@ model Transaction {
   @@index([accountId, postedAt])
   @@index([categoryId])
   @@index([beneficiaryUserId])
+  @@index([deletedAt])
   @@index([transferAccountId])
+  @@index([taggedByRuleId])
+}
+
+// A flagged possible data-quality issue (duplicate transactions, etc.) found
+// by the post-sync/post-import detection pass. `kind` is a plain string, not
+// an enum, so new detectors can ship without a migration. `fingerprint` gives
+// each anomaly a stable identity across re-runs (sha256 of kind + sorted
+// transaction ids) so a dismissed/resolved item isn't re-flagged tomorrow.
+model TransactionAnomaly {
+  id               String    @id @default(cuid())
+  kind             String
+  fingerprint      String    @unique
+  transactionIds   String[]
+  detail           String
+  status           String    @default("open") // open | dismissed | resolved
+  detectedAt       DateTime  @default(now())
+  reviewedAt       DateTime?
+  reviewedByUserId String?
+  reviewedByUser   User?     @relation("AnomalyReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  resolutionNote   String?
+
+  @@index([status])
 }
 
 enum CategoryKind {
@@ -355,6 +404,8 @@ model CategoryRule {
   beneficiaryUserId String?
   beneficiaryUser   User?        @relation("RuleBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: SetNull)
   createdAt  DateTime  @default(now())
+
+  taggedTransactions Transaction[] @relation("TxnTaggedByRule")
 
   @@index([categoryId])
   @@index([linkedAccountId])
@@ -438,6 +489,122 @@ model BalanceSnapshot {
   balance    Decimal  @db.Decimal(14, 2)
 
   @@index([accountId, capturedAt])
+}
+
+// ----------------------------------------------------------------------------
+// Folder sync (agent-assisted transaction import)
+// ----------------------------------------------------------------------------
+// Bank export files (CSV/XLSX/PDF) dropped into a watched folder, parsed by a
+// Claude-powered agent into normalized rows + an account guess. Nothing here
+// ever becomes a real Transaction without a human approving it first.
+
+enum FolderSyncFileType {
+  csv
+  xlsx
+  pdf
+}
+
+enum FolderSyncStatus {
+  needs_review
+  needs_account
+  parse_failed
+  committed
+  rejected
+}
+
+enum FolderSyncMappingSource {
+  cache_hit
+  agent
+}
+
+model PendingImport {
+  id               String                  @id @default(cuid())
+  fileName         String
+  // sha256 of raw file bytes. Combined with groupKey for dedup — a
+  // multi-account file (see groupKey below) hashes to the same fileHash
+  // across all of its split rows, so fileHash alone can no longer be unique.
+  fileHash         String
+  // Set when this row is one of several split out of a single multi-account
+  // file (e.g. one Wealthsimple CSV covering Chequing + FHSA + two TFSAs) —
+  // the raw per-row account identifier from the file (rawAccountId below).
+  // Empty string for the common single-account-per-file case, preserving
+  // today's one-row-per-file behavior and dedup key.
+  groupKey         String                  @default("")
+  // The file's own raw account-id column value this row was split from, e.g.
+  // Wealthsimple's "WK4913RK8CAD" — null unless groupKey is set. Carried
+  // forward so approve can teach the accountIdHints cache below.
+  rawAccountId     String?
+  fileType         FolderSyncFileType
+  status           FolderSyncStatus        @default(needs_review)
+  mappingSource    FolderSyncMappingSource
+  mappingCacheId   String?
+  mappingCache     FolderSyncMapping?      @relation(fields: [mappingCacheId], references: [id], onDelete: SetNull)
+  // Agent's best guess at the target account; null = needs_account.
+  accountId        String?
+  account          Account?                @relation("PendingImportAccount", fields: [accountId], references: [id], onDelete: SetNull)
+  // 0-1, null on a cache hit (deterministic, no agent confidence to report) or parse_failed.
+  confidence       Float?
+  // ImportRow[] shape: {postedAt, amount, payee, memo}[] — opaque, never queried independently of its parent file.
+  rows             Json
+  // CSV only: the header fingerprint + column mapping actually used (agent
+  // guess or cache hit). Carried forward from scan time so a successful
+  // approve of an agent-mapped file can "teach" FolderSyncMapping without
+  // re-parsing the original file.
+  headerFingerprint String?
+  columnMapping     Json?
+  // Agent's free-text explanation, shown in the review UI.
+  notes            String?
+  // Set on parse_failed.
+  errorMessage     String?
+  reviewedAt       DateTime?
+  reviewedByUserId String?
+  reviewedByUser   User?                   @relation(fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@unique([fileHash, groupKey])
+  @@index([status])
+}
+
+// CSV-only header-fingerprint -> column-mapping cache. A previously-seen
+// header format skips the LLM call entirely; XLSX/PDF always go through the
+// agent in v1 (harder to fingerprint reliably, lower volume, not worth
+// caching yet).
+model FolderSyncMapping {
+  id                 String    @id @default(cuid())
+  headerFingerprint  String    @unique
+  // e.g. "RBC Chequing export" — set from the agent's institutionGuess on first use.
+  sourceLabel        String?
+  dateColumn         Int
+  dateFormat         String
+  payeeColumn        Int?
+  memoColumn         Int?
+  amountMode         String
+  amountColumn       Int?
+  flipSign           Boolean   @default(false)
+  debitColumn        Int?
+  creditColumn       Int?
+  // Multi-account files only: the column holding a per-row account
+  // identifier (e.g. Wealthsimple's account_id), and optionally a column
+  // naming the account type (e.g. "TFSA") used to narrow candidates before
+  // ever asking the agent. Null for an ordinary single-account file.
+  accountColumn      Int?
+  accountTypeColumn  Int?
+  // Multi-account files only: raw account-id -> target Account.id, taught
+  // the same way as suggestedAccountId below — only written on a human
+  // approve, never from the agent's raw guess. Lets a recognized raw account
+  // id resolve deterministically on every later scan, skipping both the
+  // narrowing heuristic and the disambiguation agent call.
+  accountIdHints     Json?
+  // Set only after a human approves an agent-mapped file using this mapping —
+  // never written from the agent's raw guess. This is the "teaching" step.
+  suggestedAccountId String?
+  suggestedAccount   Account?  @relation("FolderSyncSuggestedAccount", fields: [suggestedAccountId], references: [id], onDelete: SetNull)
+  lastUsedAt         DateTime  @default(now())
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  pendingImports     PendingImport[]
 }
 
 // ----------------------------------------------------------------------------
