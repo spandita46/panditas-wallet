@@ -2,8 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Panditas Wallet</title>
+
+    <!-- vite-plugin-pwa auto-injects <link rel="manifest"> at build time —
+         don't declare it here too, or the built HTML ends up with two. -->
+    <meta name="theme-color" content="#4338ca" />
+
+    <!-- iOS ignores most of the manifest spec and needs its own tags to
+         behave as a standalone home-screen app. -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Panditas Wallet" />
   </head>
   <body>
     <div id="root"></div>

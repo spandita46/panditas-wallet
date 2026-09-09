@@ -1,0 +1,43 @@
+<svg viewBox="0 0 132 132" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="132" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6a63f6"/>
+      <stop offset="1" stop-color="#4338ca"/>
+    </linearGradient>
+    <mask id="noteMask">
+      <rect x="-22" y="-13" width="44" height="26" rx="5" fill="white"/>
+      <circle cx="-10" cy="0" r="7" fill="none" stroke="black" stroke-width="2.2"/>
+      <circle cx="-10" cy="0" r="2.4" fill="black"/>
+      <line x1="2" y1="-5" x2="17" y2="-5" stroke="black" stroke-width="2"/>
+      <line x1="2" y1="0" x2="17" y2="0" stroke="black" stroke-width="2"/>
+      <line x1="2" y1="5" x2="12" y2="5" stroke="black" stroke-width="2"/>
+    </mask>
+    <mask id="walletMask">
+      <rect width="132" height="132" fill="black"/>
+      <rect x="30" y="46" width="72" height="50" rx="10" fill="white"/>
+      <path d="M61 64 L68 84 L75 68 L82 84 L87 64"
+            fill="none" stroke="black" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M46 58 L46 84 M46 58 L61 58 A6 6 0 0 1 61 71 L46 71"
+            fill="none" stroke="black" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+      <g transform="translate(75,46) rotate(-14)">
+        <line x1="-8" y1="0" x2="8" y2="0" stroke="black" stroke-width="2.4" stroke-linecap="round"/>
+      </g>
+    </mask>
+  </defs>
+
+  <rect width="132" height="132" fill="url(#bg)"/>
+
+  <!-- Maskable purpose: Android launchers crop to their own shape (circle,
+       squircle, rounded-square...) keeping only the inner ~80% "safe zone"
+       circle. Everything below is scaled to 0.7 and centered so the whole
+       composition sits inside that circle instead of getting clipped at the
+       note's corners. -->
+  <g transform="translate(66,66) scale(0.7) translate(-66,-66)">
+    <g transform="translate(95,34) rotate(-14)">
+      <rect x="-22" y="-13" width="44" height="26" rx="5" fill="#fbf6e8"/>
+      <rect x="-22" y="-13" width="44" height="26" rx="5" fill="#241b4d" mask="url(#noteMask)"/>
+      <rect x="-22" y="-13" width="44" height="26" rx="5" fill="none" stroke="#120d33" stroke-width="0.8" opacity="0.35"/>
+    </g>
+    <rect width="132" height="132" fill="white" mask="url(#walletMask)"/>
+  </g>
+</svg>
